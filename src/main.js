@@ -55,7 +55,20 @@ const kit = createDialKit('Hand', {
   },
   skin: { color: '#d0d0d0', roughness: [0.75, 0, 1, 0.01], grain: [0.6, 0, 3, 0.05], wireframe: false, smoothness: [2, 0, 3, 1] },
   // Degrees around the palm normal; positive swings toward the pinky side.
-  spread: { thumb: [-11, -60, 30, 1], index: [-5, -30, 30, 1], middle: [0, -30, 30, 1], ring: [3, -30, 30, 1], pinky: [8, -30, 40, 1] },
+  spread: { thumb: [-14, -60, 30, 1], index: [-5, -30, 30, 1], middle: [0, -30, 30, 1], ring: [3, -30, 30, 1], pinky: [8, -30, 40, 1] },
+  // Grip = the "about to hold a phone" pose. Amount 0 is open, 1 is fully closed; dragging the hand sets it.
+  // Angles are what each joint reaches at amount 1.
+  grip: {
+    amount: [1, 0, 1, 0.01],
+    roll: [84, 0, 120, 1],
+    proximal: [0, 0, 110, 1],
+    intermediate: [76, 0, 120, 1],
+    distal: [45, 0, 90, 1],
+    // How much the gaps between fingers close by amount 1: 0 = keep the open fan, 1 = parallel to the
+    // middle finger, >1 = tips lean in. Fingers keep their fan until `squeezeFrom`, then ease together.
+    squeeze: [1, 0, 1.3, 0.01],
+    squeezeFrom: [0.5, 0, 1, 0.01],
+  },
 }, { id: 'hand', persist: true, onAction: (path) => path === 'reset' && kit.resetValues() })
 
 let pose = () => {} // these two are replaced once the model has loaded
@@ -77,7 +90,7 @@ function apply(v) {
   skin.bumpScale = v.skin.grain
   skin.wireframe = v.skin.wireframe
 
-  pose(v.spread)
+  pose(v.spread, v.grip)
   smooth(v.skin.smoothness)
 }
 kit.subscribe(apply)
@@ -118,22 +131,81 @@ new GLTFLoader().load('/models/right.glb', ({ scene: hand }) => {
 
   // Spread: swing each finger around the palm normal, pivoting at its knuckle.
   // All bones in this model are siblings, so every bone of the finger is moved explicitly.
-  pose = (spread) => {
-    for (const [b, [p, q]] of rest) { b.position.copy(p); b.quaternion.copy(q) }
-    for (const [finger, deg] of Object.entries(spread)) {
-      const prefix = finger === 'thumb' ? 'thumb' : `${finger}-finger`
-      const joints = finger === 'thumb'
-        ? ['metacarpal', 'phalanx-proximal', 'phalanx-distal', 'tip']
-        : ['phalanx-proximal', 'phalanx-intermediate', 'phalanx-distal', 'tip']
-      const q = new THREE.Quaternion().setFromAxisAngle(normal, THREE.MathUtils.degToRad(deg))
-      const pivot = rest.get(bone(`${prefix}-${joints[0]}`))[0]
-      for (const j of joints) {
-        const b = bone(`${prefix}-${j}`)
-        b.position.sub(pivot).applyQuaternion(q).add(pivot)
-        b.quaternion.premultiply(q)
-      }
+  // Swing a list of bones rigidly around an axis through a pivot (all in the model's space).
+  const swing = (bones, pivot, axis, rad) => {
+    const q = new THREE.Quaternion().setFromAxisAngle(axis, rad)
+    for (const b of bones) {
+      b.position.sub(pivot).applyQuaternion(q).add(pivot)
+      b.quaternion.premultiply(q)
     }
   }
+  const rad = THREE.MathUtils.degToRad
+
+  // Each finger's rest-pose angle from the middle finger, around the palm normal, in degrees.
+  // The model's fingers already fan out at rest, which is why a Spread of 0 still leaves gaps.
+  const dir = (f) => pos(`${f}-finger-tip`).sub(pos(`${f}-finger-phalanx-proximal`)).projectOnPlane(normal).normalize()
+  const fanRest = { thumb: 0 }
+  for (const f of ['index', 'middle', 'ring', 'pinky']) {
+    const m = dir('middle'), d = dir(f)
+    fanRest[f] = THREE.MathUtils.radToDeg(Math.atan2(m.clone().cross(d).dot(normal), m.dot(d)))
+  }
+
+  pose = (spread, grip) => {
+    const t = grip.amount
+    for (const [b, [p, q]] of rest) { b.position.copy(p); b.quaternion.copy(q) }
+
+    for (const [finger, deg] of Object.entries(spread)) {
+      const thumb = finger === 'thumb'
+      const prefix = thumb ? 'thumb' : `${finger}-finger`
+      const names = thumb
+        ? ['metacarpal', 'phalanx-proximal', 'phalanx-distal', 'tip']
+        : ['phalanx-proximal', 'phalanx-intermediate', 'phalanx-distal', 'tip']
+      const bones = names.map((n) => bone(`${prefix}-${n}`))
+
+      // 1. Spread sideways. A finger's fan angle (measured from the middle finger) is its rest angle
+      //    plus your Spread slider; the grip scales that angle down. The thumb keeps its spread.
+      const k = thumb ? 0 : THREE.MathUtils.smoothstep(t, grip.squeezeFrom, 1)
+      const fan = (fanRest[finger] + deg) * (1 - grip.squeeze * k)
+      const side = fan - fanRest[finger]
+      swing(bones, bones[0].position.clone(), normal, rad(side))
+      if (thumb) continue // thumb doesn't curl in the grip, like your photos
+
+      // 2. Curl: each joint bends everything past it toward the palm, around the finger's own side axis.
+      const hinge = across.clone().applyAxisAngle(normal, rad(side))
+      const bends = [grip.proximal, grip.intermediate, grip.distal]
+      bends.forEach((b, i) => swing(bones.slice(i), bones[i].position.clone(), hinge, rad(b * t)))
+    }
+
+    // 3. Roll the whole hand around the wrist (view axis) so fingers end up pointing left, thumb up.
+    swing(rest.keys(), rest.get(bone('wrist'))[0], normal, rad(grip.roll * t))
+  }
+
+  // Drag: the middle fingertip follows the mouse along its own arc.
+  // Sample where the tip lands on screen for amounts 0..1, then pick the sample nearest the pointer.
+  // ponytail: nearest-sample search can jump if the arc crosses itself; restrict to neighbours of the current amount if it does.
+  const tip = bone('middle-finger-tip')
+  let arc = null
+  const screenTip = () => {
+    hand.updateMatrixWorld(true)
+    return tip.getWorldPosition(new THREE.Vector3()).project(camera)
+  }
+  renderer.domElement.addEventListener('pointerdown', (e) => {
+    const v = kit.getValues()
+    arc = Array.from({ length: 101 }, (_, i) => {
+      pose(v.spread, { ...v.grip, amount: i / 100 })
+      return [i / 100, screenTip()]
+    })
+    pose(v.spread, v.grip) // put the current pose back after sampling
+    renderer.domElement.setPointerCapture(e.pointerId)
+  })
+  renderer.domElement.addEventListener('pointermove', (e) => {
+    if (!arc) return
+    const x = (e.clientX / innerWidth) * 2 - 1, y = -(e.clientY / innerHeight) * 2 + 1
+    const dist = ([, p]) => Math.hypot((p.x - x) * camera.aspect, p.y - y) // aspect: equal pixels both ways
+    const [amount] = arc.reduce((best, s) => (dist(s) < dist(best) ? s : best))
+    kit.setValue('grip.amount', amount) // re-poses via subscribe; the hand stays here on release
+  })
+  addEventListener('pointerup', () => { arc = null })
 
   apply(kit.getValues())
   scene.add(hand)
