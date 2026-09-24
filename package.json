@@ -12,6 +12,8 @@
     "vite": "^8.3.0"
   },
   "dependencies": {
-    "three": "^0.186.0"
+    "dialkit": "^2.0.2",
+    "three": "^0.186.0",
+    "three-subdivide": "^1.1.5"
   }
 }

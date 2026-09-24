@@ -1,19 +1,2 @@
-#app {
-  max-width: 100%;
-  margin: 0 auto;
-  min-height: 100svh;
-  display: flex;
-}
-
-main {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-main img {
-  display: block;
-  max-width: min(338px, 80vw);
-  height: auto;
-}
+body { margin: 0; background: #fff; }
+canvas { display: block; }
