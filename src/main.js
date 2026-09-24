@@ -43,7 +43,7 @@ const skin = new THREE.MeshStandardMaterial({ bumpMap: noiseTexture() })
 
 // Every tweakable number lives here. Sliders are [default, min, max, step].
 // "Copy" in the panel's version menu gives you the values to paste back as new defaults.
-createDialRoot({ position: 'top-right' })
+createDialRoot({ position: 'top-right', productionEnabled: false }) // panel only in dev
 const kit = createDialKit('Hand', {
   reset: { type: 'action' },
   camera: { distance: [0.5, 0.2, 1.5, 0.01], height: [0, -0.15, 0.15, 0.005], fov: [35, 15, 70, 1] },
@@ -59,7 +59,7 @@ const kit = createDialKit('Hand', {
   // Grip = the "about to hold a phone" pose. Amount 0 is open, 1 is fully closed; dragging the hand sets it.
   // Angles are what each joint reaches at amount 1.
   grip: {
-    amount: [1, 0, 1, 0.01],
+    amount: [0, 0, 1, 0.01],
     roll: [84, 0, 120, 1],
     proximal: [0, 0, 110, 1],
     intermediate: [76, 0, 120, 1],
@@ -69,7 +69,7 @@ const kit = createDialKit('Hand', {
     squeeze: [1, 0, 1.3, 0.01],
     squeezeFrom: [0.5, 0, 1, 0.01],
   },
-}, { id: 'hand', persist: true, onAction: (path) => path === 'reset' && kit.resetValues() })
+}, { id: 'hand', persist: import.meta.env.DEV, onAction: (path) => path === 'reset' && kit.resetValues() })
 
 let pose = () => {} // these two are replaced once the model has loaded
 let smooth = () => {}
