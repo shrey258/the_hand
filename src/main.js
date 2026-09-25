@@ -145,7 +145,7 @@ const kit = createDialKit('Hand', {
     squeeze: [1.3, 0, 1.3, 0.01],
     squeezeFrom: [0.85, 0, 1, 0.01],
   },
-  dots: { count: [350000, 10000, 500000, 10000], color: '#1a1a1a', size: [1, 0.5, 4, 0.5], cloud: [0.3, 0.05, 1, 0.01], cloudInk: [0.3, 0, 1, 0.01], travel: [0.4, 0.05, 1, 0.01], shade: [0.5, 0, 1, 0.01] },
+  dots: { count: [500000, 10000, 500000, 10000], color: '#000000', size: [1, 0.5, 4, 0.5], cloud: [1, 0.05, 1, 0.01], cloudInk: [0.47, 0, 1, 0.01], travel: [0.8, 0.05, 1, 0.01], shade: [0, 0, 1, 0.01] },
   // Phone sits in world space, placed for the end state (grip amount 1). Position in metres.
   phone: {
     x: [-0.106, -0.15, 0.15, 0.001], y: [-0.049, -0.15, 0.15, 0.001], z: [0.027, -0.1, 0.15, 0.001],
