@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "dialkit": "^2.0.2",
+    "gsap": "^3.15.0",
     "three": "^0.186.0",
     "three-subdivide": "^1.1.5"
   }

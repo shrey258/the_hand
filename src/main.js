@@ -2,6 +2,8 @@ import './style.css'
 import 'dialkit/vanilla/styles.css'
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { gsap } from 'gsap'
+import { ScrollTrigger } from 'gsap/ScrollTrigger'
 import { createDialKit, createDialRoot } from 'dialkit/vanilla'
 import { subdivide } from './subdivide.js'
 
@@ -80,10 +82,10 @@ const kit = createDialKit('Hand', {
   skin: { color: '#d0d0d0', roughness: [0.75, 0, 1, 0.01], grain: [0.6, 0, 3, 0.05], wireframe: false, smoothness: [2, 0, 3, 1] },
   // Degrees around the palm normal; positive swings toward the pinky side.
   spread: { thumb: [-14, -60, 30, 1], index: [-5, -30, 30, 1], middle: [0, -30, 30, 1], ring: [3, -30, 30, 1], pinky: [8, -30, 40, 1] },
-  // Grip = the "about to hold a phone" pose. Amount 0 is open, 1 is fully closed; dragging the hand sets it.
+  // Grip = the "about to hold a phone" pose. Amount 0 is open, 1 is fully closed; scrolling sets it.
   // Angles are what each joint reaches at amount 1.
   grip: {
-    amount: [1, 0, 1, 0.01],
+    amount: [0, 0, 1, 0.01],
     roll: [85, 0, 120, 1],
     proximal: [35, 0, 110, 1],
     // Middle and fingertip joints, per finger, so each tip can land on the phone's edge.
@@ -97,7 +99,7 @@ const kit = createDialKit('Hand', {
   // Phone sits in world space, placed for the end state (grip amount 1). Position in metres.
   phone: {
     x: [-0.106, -0.15, 0.15, 0.001], y: [-0.049, -0.15, 0.15, 0.001], z: [0.027, -0.1, 0.15, 0.001],
-    // How far above its resting spot the phone starts at grip 0; dragging the hand brings it down.
+    // How far above its resting spot the phone starts at grip 0; scrolling brings it down.
     // 0.3 clears the top of the frame at the default camera.
     drop: [0.3, 0, 0.5, 0.005],
   },
@@ -249,32 +251,15 @@ new GLTFLoader().load('/models/right.glb', ({ scene: hand }) => {
     swing(rest.keys(), rest.get(bone('wrist'))[0], normal, rad(grip.roll * t))
   }
 
-  // Drag: the middle fingertip follows the mouse along its own arc.
-  // Sample where the tip lands on screen for amounts 0..1, then pick the sample nearest the pointer.
-  // ponytail: nearest-sample search can jump if the arc crosses itself; restrict to neighbours of the current amount if it does.
-  const tip = bone('middle-finger-tip')
-  let arc = null
-  const screenTip = () => {
-    hand.updateMatrixWorld(true)
-    return tip.getWorldPosition(new THREE.Vector3()).project(camera)
-  }
-  renderer.domElement.addEventListener('pointerdown', (e) => {
-    const v = kit.getValues()
-    arc = Array.from({ length: 101 }, (_, i) => {
-      pose(v.spread, { ...v.grip, amount: i / 100 })
-      return [i / 100, screenTip()]
-    })
-    pose(v.spread, v.grip) // put the current pose back after sampling
-    renderer.domElement.setPointerCapture(e.pointerId)
+  // Scroll drives the grip: pin the canvas for two screens of scrolling, and map that distance to amount 0 → 1.
+  // scrub: 1 = the hand takes ~1 s to catch up with the scrollbar, which is what smooths wheel steps.
+  gsap.registerPlugin(ScrollTrigger)
+  gsap.to({ amount: 0 }, {
+    amount: 1,
+    ease: 'none', // linear: easing already lives in the pose (squeezeFrom, smoothstep)
+    scrollTrigger: { trigger: '#app', pin: true, start: 'top top', end: '+=200%', scrub: 1 },
+    onUpdate() { kit.setValue('grip.amount', this.targets()[0].amount) }, // re-poses via subscribe
   })
-  renderer.domElement.addEventListener('pointermove', (e) => {
-    if (!arc) return
-    const x = (e.clientX / innerWidth) * 2 - 1, y = -(e.clientY / innerHeight) * 2 + 1
-    const dist = ([, p]) => Math.hypot((p.x - x) * camera.aspect, p.y - y) // aspect: equal pixels both ways
-    const [amount] = arc.reduce((best, s) => (dist(s) < dist(best) ? s : best))
-    kit.setValue('grip.amount', amount) // re-poses via subscribe; the hand stays here on release
-  })
-  addEventListener('pointerup', () => { arc = null })
 
   apply(kit.getValues())
   scene.add(hand)
