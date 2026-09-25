@@ -53,7 +53,9 @@ function noiseTexture(size = 512) {
   return tex
 }
 
-const skin = new THREE.MeshStandardMaterial({ bumpMap: noiseTexture() })
+// The hand itself is never seen: it only writes depth, so dots on the far side of it stay hidden.
+// polygonOffset pushes that depth back a hair so dots lying exactly on the surface don't flicker.
+const skin = new THREE.MeshStandardMaterial({ bumpMap: noiseTexture(), colorWrite: false, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 })
 
 // thumbOnly = 1 draws just the thumb: pixels mostly skinned to thumb bones (skin indices 1–4 in right.glb).
 // The render loop uses it to draw the thumb over the phone while the four fingers stay behind it.
@@ -66,6 +68,53 @@ skin.onBeforeCompile = (shader) => {
   shader.fragmentShader = shader.fragmentShader
     .replace('void main() {', 'uniform float thumbOnly;\nvarying float vThumb;\nvoid main() {\nif (thumbOnly > 0.5 && vThumb < 0.5) discard;')
 }
+
+// Dots: each has a home on the skin (skinned like the hand, so it rides the grip) and a spot in a
+// floating cloud. Each dot sets off at its own time (seed) and takes `travel` of the scroll to arrive.
+const dotsMat = new THREE.ShaderMaterial({
+  uniforms: {
+    progress: { value: 0 }, travel: { value: 0.4 }, time: { value: 0 }, size: { value: 2 },
+    cloudSize: { value: 0.3 }, cloudInk: { value: 0.3 }, shade: { value: 0.7 }, color: { value: new THREE.Color() },
+    lightDir: { value: key.position }, thumbOnly,
+  },
+  vertexShader: `
+    #include <common>
+    #include <skinning_pars_vertex>
+    uniform float progress, travel, time, size, cloudSize;
+    uniform vec3 lightDir;
+    attribute vec3 cloud;
+    attribute float seed;
+    varying float vLit, vSeed, vThumb, vK;
+    void main() {
+      #include <skinbase_vertex>
+      #include <beginnormal_vertex>
+      #include <skinnormal_vertex>
+      #include <begin_vertex>
+      #include <skinning_vertex>
+      vThumb = dot(skinWeight, step(0.5, skinIndex) * step(skinIndex, vec4(4.5)));
+      vec3 home = (modelMatrix * vec4(transformed, 1.0)).xyz;
+      vec3 drift = cloud * cloudSize + 0.01 * sin(time * 0.6 + seed * 50.0 + vec3(0.0, 2.0, 4.0));
+      float start = seed * (1.0 - travel);
+      float k = smoothstep(start, start + travel, progress);
+      gl_Position = projectionMatrix * viewMatrix * vec4(mix(drift, home, k), 1.0);
+      // In flight: draw in front of everything, or the invisible hand would cut a hand-shaped hole in the cloud.
+      if (k < 1.0) gl_Position.z = -0.999 * gl_Position.w;
+      gl_PointSize = size;
+      vLit = k * max(dot(normalize(mat3(modelMatrix) * objectNormal), normalize(lightDir)), 0.0);
+      vSeed = fract(seed * 97.0);
+      vK = k;
+    }`,
+  fragmentShader: `
+    uniform float shade, thumbOnly, cloudInk;
+    uniform vec3 color;
+    varying float vLit, vSeed, vThumb, vK;
+    void main() {
+      if (thumbOnly > 0.5 && (vThumb < 0.5 || vK < 1.0)) discard; // over the phone: only thumb dots that have landed
+      if (vLit * shade > vSeed) discard; // dither: lit skin keeps fewer dots, shadowed skin keeps them all
+      gl_FragColor = vec4(mix(vec3(1.0), color, mix(cloudInk, 1.0, vK)), 1.0); // cloud is pale grey, ink as it lands
+      #include <colorspace_fragment>
+    }`,
+})
 
 // Every tweakable number lives here. Sliders are [default, min, max, step].
 // "Copy" in the panel's version menu gives you the values to paste back as new defaults.
@@ -96,6 +145,7 @@ const kit = createDialKit('Hand', {
     squeeze: [1.3, 0, 1.3, 0.01],
     squeezeFrom: [0.85, 0, 1, 0.01],
   },
+  dots: { count: [350000, 10000, 500000, 10000], color: '#1a1a1a', size: [1, 0.5, 4, 0.5], cloud: [0.3, 0.05, 1, 0.01], cloudInk: [0.3, 0, 1, 0.01], travel: [0.4, 0.05, 1, 0.01], shade: [0.5, 0, 1, 0.01] },
   // Phone sits in world space, placed for the end state (grip amount 1). Position in metres.
   phone: {
     x: [-0.106, -0.15, 0.15, 0.001], y: [-0.049, -0.15, 0.15, 0.001], z: [0.027, -0.1, 0.15, 0.001],
@@ -111,11 +161,17 @@ scene.add(phone)
 
 let pose = () => {} // these two are replaced once the model has loaded
 let smooth = () => {}
+let dots = null // the dot cloud, built once the hand has loaded
 
 function apply(v) {
   camera.position.set(0, v.camera.height, v.camera.distance)
   camera.fov = v.camera.fov
-  camera.updateProjectionMatrix()
+  camera.clearViewOffset()
+  camera.updateMatrixWorld()
+  // Centre the phone's resting spot by sliding the frame (a shift lens), not by moving the camera,
+  // which would change the angle we see the grip from.
+  const c = new THREE.Vector3(v.phone.x, v.phone.y, v.phone.z).project(camera)
+  camera.setViewOffset(innerWidth, innerHeight, (c.x * innerWidth) / 2, (-c.y * innerHeight) / 2, innerWidth, innerHeight)
 
   const az = THREE.MathUtils.degToRad(v.light.azimuth)
   const el = THREE.MathUtils.degToRad(v.light.elevation)
@@ -130,6 +186,16 @@ function apply(v) {
 
   pose(v.spread, v.grip)
   smooth(v.skin.smoothness)
+
+  const u = dotsMat.uniforms
+  u.progress.value = v.grip.amount
+  u.travel.value = v.dots.travel
+  u.size.value = Math.max(1, Math.round(v.dots.size * renderer.getPixelRatio())) // whole device pixels, so every dot is the same crisp square
+  u.cloudSize.value = v.dots.cloud
+  u.shade.value = v.dots.shade
+  u.cloudInk.value = v.dots.cloudInk
+  dots?.geometry.setDrawRange(0, v.dots.count)
+  u.color.value.set(v.dots.color)
 
   phone.position.set(v.phone.x, v.phone.y + v.phone.drop * (1 - v.grip.amount), v.phone.z)
 }
@@ -263,19 +329,66 @@ new GLTFLoader().load('/models/right.glb', ({ scene: hand }) => {
 
   apply(kit.getValues())
   scene.add(hand)
+
+  // Scatter dots over the skin, evenly: pick a triangle with odds by its area, then a random point in it.
+  // ponytail: each dot copies the bone weights of its nearest corner; blend all three if knuckles tear.
+  const g = mesh.geometry, idx = g.index.array, P = g.attributes.position, N = g.attributes.normal
+  const SI = g.attributes.skinIndex, SW = g.attributes.skinWeight
+  const corner = (t, c) => new THREE.Vector3().fromBufferAttribute(P, idx[t * 3 + c])
+  const areas = []
+  for (let t = 0, sum = 0; t < idx.length / 3; t++) areas.push(sum += new THREE.Triangle(corner(t, 0), corner(t, 1), corner(t, 2)).getArea())
+
+  const count = 500000 // the Count slider's max. Dots are random, so drawing the first N is still an even spread
+  const attr = (size) => new THREE.BufferAttribute(new Float32Array(count * size), size)
+  const d = new THREE.BufferGeometry()
+  for (const [name, size] of [['position', 3], ['normal', 3], ['skinWeight', 4], ['cloud', 3], ['seed', 1]]) d.setAttribute(name, attr(size))
+  d.setAttribute('skinIndex', new THREE.BufferAttribute(new Uint16Array(count * 4), 4))
+  const at = d.attributes, p = new THREE.Vector3(), n = new THREE.Vector3(), tmp = new THREE.Vector3()
+  for (let i = 0; i < count; i++) {
+    const r = Math.random() * areas.at(-1)
+    let lo = 0, hi = areas.length - 1
+    while (lo < hi) { const m = (lo + hi) >> 1; if (areas[m] < r) lo = m + 1; else hi = m }
+    let u = Math.random(), v = Math.random()
+    if (u + v > 1) { u = 1 - u; v = 1 - v }
+    const w = [1 - u - v, u, v]
+    p.set(0, 0, 0); n.set(0, 0, 0)
+    w.forEach((wc, c) => {
+      p.addScaledVector(tmp.fromBufferAttribute(P, idx[lo * 3 + c]), wc)
+      n.addScaledVector(tmp.fromBufferAttribute(N, idx[lo * 3 + c]), wc)
+    })
+    at.position.setXYZ(i, p.x, p.y, p.z)
+    at.normal.setXYZ(i, n.x, n.y, n.z)
+    const near = idx[lo * 3 + w.indexOf(Math.max(...w))]
+    at.skinIndex.setXYZW(i, SI.getX(near), SI.getY(near), SI.getZ(near), SI.getW(near))
+    at.skinWeight.setXYZW(i, SW.getX(near), SW.getY(near), SW.getZ(near), SW.getW(near))
+    tmp.randomDirection().multiplyScalar(Math.cbrt(Math.random())) // uniform in a unit ball; cloudSize scales it
+    at.cloud.setXYZ(i, tmp.x * 1.5, tmp.y, tmp.z * 0.5)
+    at.seed.setX(i, Math.random())
+  }
+
+  // Points drawn with the hand's own skeleton. three only skins objects flagged isSkinnedMesh, so borrow
+  // the mesh's skeleton and bind matrices. ponytail: relies on three internals; recheck after upgrades.
+  dots = new THREE.Points(d, dotsMat)
+  d.setDrawRange(0, kit.getValues().dots.count)
+  Object.assign(dots, { isSkinnedMesh: true, skeleton: mesh.skeleton, bindMatrix: mesh.bindMatrix, bindMatrixInverse: mesh.bindMatrixInverse })
+  dots.frustumCulled = false
+  dots.renderOrder = 1 // after the invisible hand has written its depth
+  mesh.add(dots) // same world matrix as the mesh, which its skinning assumes
 })
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight
-  camera.updateProjectionMatrix()
   renderer.setSize(innerWidth, innerHeight)
+  apply(kit.getValues()) // re-centres the phone for the new size
 })
 
 // Three passes: hand, then wipe depth and draw the phone over it (so no finger shows through the phone's
 // body), then the thumb again, depth-tested against the phone, so it stays in front where it really is.
 // ponytail: only right from this fixed camera; real contact needs per-finger collision.
 renderer.autoClear = false
-renderer.setAnimationLoop(() => {
+const still = matchMedia('(prefers-reduced-motion: reduce)')
+renderer.setAnimationLoop((ms) => {
+  if (!still.matches) dotsMat.uniforms.time.value = ms / 1000 // the cloud's drift
   renderer.clear()
   renderer.render(scene, camera)
   renderer.clearDepth()
