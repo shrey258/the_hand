@@ -1,2 +1,15 @@
 body { margin: 0; background: #fff; }
 canvas { display: block; }
+#loading {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  height: fit-content;
+  text-align: center;
+  font: 500 14px/1 system-ui, sans-serif;
+  color: #8a8a8a;
+  -webkit-font-smoothing: antialiased;
+  pointer-events: none;
+  transition: opacity 200ms ease-out;
+}
+#loading.done { opacity: 0; }

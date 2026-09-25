@@ -125,7 +125,7 @@ const kit = createDialKit('Hand', {
     squeeze: [1.3, 0, 1.3, 0.01],
     squeezeFrom: [0.85, 0, 1, 0.01],
   },
-  dots: { count: [250000, 10000, 500000, 10000], color: '#000000', size: [1, 0.5, 4, 0.5], cloud: [1, 0.05, 1, 0.01], cloudInk: [0, 0, 1, 0.01], travel: [0.87, 0.05, 1, 0.01], gather: [0.98, 0, 1, 0.01], shade: [1, 0, 1, 0.01] },
+  dots: { count: [250000, 10000, 500000, 10000], color: '#000000', size: [1, 0.5, 4, 0.5], cloud: [1, 0.05, 1, 0.01], cloudInk: [0.3, 0, 1, 0.01], travel: [0.87, 0.05, 1, 0.01], gather: [0.98, 0, 1, 0.01], shade: [1, 0, 1, 0.01] },
   // Phone sits in world space, placed for the end state (grip amount 1). Position in metres.
   phone: {
     x: [-0.106, -0.15, 0.15, 0.001], y: [-0.049, -0.15, 0.15, 0.001], z: [0.027, -0.1, 0.15, 0.001],
@@ -384,6 +384,7 @@ new GLTFLoader().load('/models/right.glb', ({ scene: hand }) => {
   mesh.layers.enable(2)
   dots = [split(false), thumbDots]
   apply(kit.getValues()) // sets their draw ranges
+  document.querySelector('#loading').classList.add('done') // the first frame with the dots is next
 })
 
 addEventListener('resize', () => {
