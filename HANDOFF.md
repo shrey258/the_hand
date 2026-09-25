@@ -70,3 +70,5 @@ Walkthrough progress (`src/main.js`):
 - [ ] Skinned points (369–376): borrowing the skeleton via `isSkinnedMesh`, and why `mesh.add(dots)`.
 - [ ] Phone centring (166–174): `setViewOffset` vs moving the camera. Why did moving the camera change the grip?
 - [ ] Render loop (389–): reduced-motion check.
+- [ ] Perf pass (uncommitted, 64 → 120 FPS): pixel-ratio cap, shadows deleted, `MeshBasicMaterial` depth hand, thumb dots split onto layer 2 (`split()`), `dirty` flag in the render loop. Why does the thumb pass now use `camera.layers.set(2)`?
+- [ ] Easing (uncommitted): `easeOut` in `apply()` for the grip and the phone (`phone.land`), the screen lighting up (`phone.screenOn`), and the two-stage `gather`/`land` in the dot shader. Why did the grip end up ease-in-out while the phone is ease-out?

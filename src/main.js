@@ -8,9 +8,8 @@ import { createDialKit, createDialRoot } from 'dialkit/vanilla'
 import { subdivide } from './subdivide.js'
 
 const renderer = new THREE.WebGLRenderer({ antialias: true })
-renderer.shadowMap.enabled = true
-renderer.shadowMap.type = THREE.PCFShadowMap // honours shadow.radius for a soft edge
-renderer.setPixelRatio(devicePixelRatio)
+// Capped at 1.5: at 2× a Retina screen draws 4.1M pixels a frame for a 1280×800 window, at 1.5× 2.3M.
+renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5))
 renderer.setSize(innerWidth, innerHeight)
 document.querySelector('#app').appendChild(renderer.domElement)
 
@@ -20,42 +19,17 @@ renderer.setClearColor('#ffffff') // not scene.background: that would repaint ov
 // Eye level, straight on. Units are metres: the hand is ~0.19 tall.
 const camera = new THREE.PerspectiveCamera(35, innerWidth / innerHeight, 0.01, 10)
 
-// Key light at an angle; dim sky/ground fill so the shadow side isn't black.
+// Key light at an angle; dim sky/ground fill so the shadow side isn't black. They light the phone;
+// the dots only read the key's direction for their dither.
 const key = new THREE.DirectionalLight('#ffffff')
-// Only the phone casts, onto the hand, so it reads as held rather than pasted on.
-// Shadow box sized to the scene (~0.2 m); layer 1 so the shadow pass sees the phone.
-key.castShadow = true
-key.shadow.mapSize.set(2048, 2048)
-Object.assign(key.shadow.camera, { left: -0.2, right: 0.2, top: 0.2, bottom: -0.2 })
-key.shadow.camera.layers.enable(1)
-key.shadow.radius = 6
-key.shadow.bias = -0.0005
 const fill = new THREE.HemisphereLight('#ffffff', '#666666')
 scene.add(key, fill)
 key.layers.enable(1) // layer 1 = the phone, drawn in its own pass (see the render loop)
 fill.layers.enable(1)
 
-// Grain: random noise used acan s a bump map, so light catches tiny dents in the skin.
-function noiseTexture(size = 512) {
-  const c = document.createElement('canvas')
-  c.width = c.height = size
-  const ctx = c.getContext('2d')
-  const img = ctx.createImageData(size, size)
-  for (let i = 0; i < img.data.length; i += 4) {
-    const v = Math.random() * 255
-    img.data[i] = img.data[i + 1] = img.data[i + 2] = v
-    img.data[i + 3] = 255
-  }
-  ctx.putImageData(img, 0, 0)
-  const tex = new THREE.CanvasTexture(c)
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping
-  tex.repeat.set(4, 4)
-  return tex
-}
-
 // The hand itself is never seen: it only writes depth, so dots on the far side of it stay hidden.
 // polygonOffset pushes that depth back a hair so dots lying exactly on the surface don't flicker.
-const skin = new THREE.MeshStandardMaterial({ bumpMap: noiseTexture(), colorWrite: false, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 })
+const skin = new THREE.MeshBasicMaterial({ colorWrite: false, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 })
 
 // thumbOnly = 1 draws just the thumb: pixels mostly skinned to thumb bones (skin indices 1–4 in right.glb).
 // The render loop uses it to draw the thumb over the phone while the four fingers stay behind it.
@@ -74,13 +48,13 @@ skin.onBeforeCompile = (shader) => {
 const dotsMat = new THREE.ShaderMaterial({
   uniforms: {
     progress: { value: 0 }, travel: { value: 0.4 }, time: { value: 0 }, size: { value: 2 },
-    cloudSize: { value: 0.3 }, cloudInk: { value: 0.3 }, shade: { value: 0.7 }, color: { value: new THREE.Color() },
+    cloudSize: { value: 0.3 }, gather: { value: 0.6 }, cloudInk: { value: 0.3 }, shade: { value: 0.7 }, color: { value: new THREE.Color() },
     lightDir: { value: key.position }, thumbOnly,
   },
   vertexShader: `
     #include <common>
     #include <skinning_pars_vertex>
-    uniform float progress, travel, time, size, cloudSize;
+    uniform float progress, travel, time, size, cloudSize, gather;
     uniform vec3 lightDir;
     attribute vec3 cloud;
     attribute float seed;
@@ -94,11 +68,17 @@ const dotsMat = new THREE.ShaderMaterial({
       vThumb = dot(skinWeight, step(0.5, skinIndex) * step(skinIndex, vec4(4.5)));
       vec3 home = (modelMatrix * vec4(transformed, 1.0)).xyz;
       vec3 drift = cloud * cloudSize + 0.01 * sin(time * 0.6 + seed * 50.0 + vec3(0.0, 2.0, 4.0));
+      // Two stages, like vellabs: the whole cloud drifts gather of the way in across the scroll, and each
+      // dot lands the rest of the way in its own window, easing out so it settles rather than stops.
       float start = seed * (1.0 - travel);
-      float k = smoothstep(start, start + travel, progress);
-      gl_Position = projectionMatrix * viewMatrix * vec4(mix(drift, home, k), 1.0);
-      // In flight: draw in front of everything, or the invisible hand would cut a hand-shaped hole in the cloud.
-      if (k < 1.0) gl_Position.z = -0.999 * gl_Position.w;
+      float land = 1.0 - pow(1.0 - clamp((progress - start) / travel, 0.0, 1.0), 3.0);
+      float k = mix(gather * progress, 1.0, land);
+      vec3 pos = mix(drift, home, k);
+      gl_Position = projectionMatrix * viewMatrix * vec4(pos, 1.0);
+      // Far from home: draw in front of everything, or the invisible hand would cut a hand-shaped hole in the
+      // cloud. Within 5 mm, depth-test like a landed dot, or dots behind the hand show through and the hand
+      // goes dark just before the grip, then pops lighter as they land.
+      if (distance(pos, home) > 0.005) gl_Position.z = -0.999 * gl_Position.w;
       gl_PointSize = size;
       vLit = k * max(dot(normalize(mat3(modelMatrix) * objectNormal), normalize(lightDir)), 0.0);
       vSeed = fract(seed * 97.0);
@@ -128,7 +108,7 @@ const kit = createDialKit('Hand', {
     intensity: [3.5, 0, 10, 0.1],
     fill: [0.35, 0, 2, 0.01],
   },
-  skin: { color: '#d0d0d0', roughness: [0.75, 0, 1, 0.01], grain: [0.6, 0, 3, 0.05], wireframe: false, smoothness: [2, 0, 3, 1] },
+  skin: { smoothness: [2, 0, 3, 1] }, // subdivision of the invisible depth hand; dots are sampled from it at load
   // Degrees around the palm normal; positive swings toward the pinky side.
   spread: { thumb: [-14, -60, 30, 1], index: [-5, -30, 30, 1], middle: [0, -30, 30, 1], ring: [3, -30, 30, 1], pinky: [8, -30, 40, 1] },
   // Grip = the "about to hold a phone" pose. Amount 0 is open, 1 is fully closed; scrolling sets it.
@@ -145,13 +125,17 @@ const kit = createDialKit('Hand', {
     squeeze: [1.3, 0, 1.3, 0.01],
     squeezeFrom: [0.85, 0, 1, 0.01],
   },
-  dots: { count: [500000, 10000, 500000, 10000], color: '#000000', size: [1, 0.5, 4, 0.5], cloud: [1, 0.05, 1, 0.01], cloudInk: [0.47, 0, 1, 0.01], travel: [0.8, 0.05, 1, 0.01], shade: [0, 0, 1, 0.01] },
+  dots: { count: [250000, 10000, 500000, 10000], color: '#000000', size: [1, 0.5, 4, 0.5], cloud: [1, 0.05, 1, 0.01], cloudInk: [0, 0, 1, 0.01], travel: [0.87, 0.05, 1, 0.01], gather: [0.98, 0, 1, 0.01], shade: [1, 0, 1, 0.01] },
   // Phone sits in world space, placed for the end state (grip amount 1). Position in metres.
   phone: {
     x: [-0.106, -0.15, 0.15, 0.001], y: [-0.049, -0.15, 0.15, 0.001], z: [0.027, -0.1, 0.15, 0.001],
     // How far above its resting spot the phone starts at grip 0; scrolling brings it down.
     // 0.3 clears the top of the frame at the default camera.
     drop: [0.3, 0, 0.5, 0.005],
+    // Scroll progress at which the phone lands, so it arrives first and the fingers close on it after.
+    land: [0.8, 0.3, 1, 0.01],
+    // The screen lights up over this last stretch of the scroll: the payoff once the grip is done.
+    screenOn: [0.92, 0.5, 1, 0.01],
   },
 },{ id: 'hand', persist: import.meta.env.DEV, onAction: (path) => path === 'reset' && kit.resetValues() })
 
@@ -162,6 +146,8 @@ scene.add(phone)
 let pose = () => {} // these two are replaced once the model has loaded
 let smooth = () => {}
 let dots = null // the dot cloud, built once the hand has loaded
+let dirty = true // something changed since the last frame was drawn
+let glass = null // the phone's display, once loaded
 
 function apply(v) {
   camera.position.set(0, v.camera.height, v.camera.distance)
@@ -179,25 +165,29 @@ function apply(v) {
   key.intensity = v.light.intensity
   fill.intensity = v.light.fill
 
-  skin.color.set(v.skin.color)
-  skin.roughness = v.skin.roughness
-  skin.bumpScale = v.skin.grain
-  skin.wireframe = v.skin.wireframe
-
-  pose(v.spread, v.grip)
+  // Ease-in-out for the hand: it starts turning gently and brakes onto the phone, like a real grip.
+  // The phone keeps ease-out, since it is arriving from off-screen.
+  const easeOut = (x) => 1 - (1 - x) ** 3
+  const easeInOut = (x) => (x < 0.5 ? 4 * x ** 3 : 1 - (-2 * x + 2) ** 3 / 2)
+  const t = v.grip.amount
+  pose(v.spread, { ...v.grip, amount: easeInOut(t) })
   smooth(v.skin.smoothness)
 
   const u = dotsMat.uniforms
   u.progress.value = v.grip.amount
   u.travel.value = v.dots.travel
+  u.gather.value = v.dots.gather
   u.size.value = Math.max(1, Math.round(v.dots.size * renderer.getPixelRatio())) // whole device pixels, so every dot is the same crisp square
   u.cloudSize.value = v.dots.cloud
   u.shade.value = v.dots.shade
   u.cloudInk.value = v.dots.cloudInk
-  dots?.geometry.setDrawRange(0, v.dots.count)
+  dots?.forEach((pts) => pts.geometry.setDrawRange(0, Math.round(v.dots.count * pts.share)))
   u.color.value.set(v.dots.color)
 
-  phone.position.set(v.phone.x, v.phone.y + v.phone.drop * (1 - v.grip.amount), v.phone.z)
+  // The phone slows into its resting spot and lands at `land`, before the fingers finish closing.
+  phone.position.set(v.phone.x, v.phone.y + v.phone.drop * (1 - easeOut(Math.min(t / v.phone.land, 1))), v.phone.z)
+  if (glass) glass.material.emissiveIntensity = 0.85 * THREE.MathUtils.smoothstep(t, v.phone.screenOn, 1) // 0.85: a touch under full so it doesn't glow off the page
+  dirty = true
 }
 kit.subscribe(apply)
 
@@ -227,16 +217,16 @@ screenTex.flipY = false
 
 new GLTFLoader().load('/models/iphone.glb', ({ scene: model }) => {
   model.scale.setScalar(0.01)
-  const glass = model.getObjectByName('Object_18') // the display: its own mesh and material
+  glass = model.getObjectByName('Object_18') // the display: its own mesh and material
   glass.material.emissiveMap = screenTex
-  glass.material.emissiveIntensity = 0.85 // a touch under the lit skin so the screen doesn't glow off the hand
-  model.traverse((o) => { o.layers.set(1); o.castShadow = true })
+  model.traverse((o) => o.layers.set(1))
   phone.add(model)
+  apply(kit.getValues()) // sets the screen's brightness
 })
 
 new GLTFLoader().load('/models/right.glb', ({ scene: hand }) => {
   let mesh
-  hand.traverse((o) => { if (o.isMesh) { o.material = skin; o.receiveShadow = true; mesh = o } })
+  hand.traverse((o) => { if (o.isMesh) { o.material = skin; mesh = o } })
 
   // Each level splits every triangle into 4 (1.4k → 5k → 21k → 87k vertices). Cached per level.
   const levels = [mesh.geometry]
@@ -366,14 +356,34 @@ new GLTFLoader().load('/models/right.glb', ({ scene: hand }) => {
     at.seed.setX(i, Math.random())
   }
 
-  // Points drawn with the hand's own skeleton. three only skins objects flagged isSkinnedMesh, so borrow
-  // the mesh's skeleton and bind matrices. ponytail: relies on three internals; recheck after upgrades.
-  dots = new THREE.Points(d, dotsMat)
-  d.setDrawRange(0, kit.getValues().dots.count)
-  Object.assign(dots, { isSkinnedMesh: true, skeleton: mesh.skeleton, bindMatrix: mesh.bindMatrix, bindMatrixInverse: mesh.bindMatrixInverse })
-  dots.frustumCulled = false
-  dots.renderOrder = 1 // after the invisible hand has written its depth
-  mesh.add(dots) // same world matrix as the mesh, which its skinning assumes
+  // Split off the thumb's dots (mostly skinned to bones 1–4, like the shader's test) so the thumb pass
+  // only redraws those, not all of them. Each half stays in random order, so any prefix is still even.
+  const isThumb = (i) => [0, 1, 2, 3].reduce((s, j) => s + (at.skinIndex.getComponent(i, j) >= 1 && at.skinIndex.getComponent(i, j) <= 4 ? at.skinWeight.getComponent(i, j) : 0), 0) >= 0.5
+  const keep = Array.from({ length: count }, (_, i) => isThumb(i))
+  const split = (thumb) => {
+    const ids = keep.flatMap((k, i) => (k === thumb ? [i] : []))
+    const out = new THREE.BufferGeometry()
+    for (const [name, a] of Object.entries(at)) {
+      const arr = new a.array.constructor(ids.length * a.itemSize)
+      ids.forEach((id, j) => arr.set(a.array.subarray(id * a.itemSize, (id + 1) * a.itemSize), j * a.itemSize))
+      out.setAttribute(name, new THREE.BufferAttribute(arr, a.itemSize))
+    }
+    // Points drawn with the hand's own skeleton. three only skins objects flagged isSkinnedMesh, so borrow
+    // the mesh's skeleton and bind matrices. ponytail: relies on three internals; recheck after upgrades.
+    const pts = new THREE.Points(out, dotsMat)
+    Object.assign(pts, { isSkinnedMesh: true, skeleton: mesh.skeleton, bindMatrix: mesh.bindMatrix, bindMatrixInverse: mesh.bindMatrixInverse })
+    pts.frustumCulled = false
+    pts.renderOrder = 1 // after the invisible hand has written its depth
+    pts.share = ids.length / count
+    mesh.add(pts) // same world matrix as the mesh, which its skinning assumes
+    return pts
+  }
+  // Layer 2 = what the thumb pass draws: the depth hand and the thumb's dots (also in the main pass, while in flight).
+  const thumbDots = split(true)
+  thumbDots.layers.enable(2)
+  mesh.layers.enable(2)
+  dots = [split(false), thumbDots]
+  apply(kit.getValues()) // sets their draw ranges
 })
 
 addEventListener('resize', () => {
@@ -388,14 +398,20 @@ addEventListener('resize', () => {
 renderer.autoClear = false
 const still = matchMedia('(prefers-reduced-motion: reduce)')
 renderer.setAnimationLoop((ms) => {
+  // Draw only when something changed or the cloud is still drifting. Once every dot has landed
+  // (progress 1) the picture is still, and the canvas keeps showing the last frame for free.
+  const drifting = !still.matches && dotsMat.uniforms.progress.value < 1
+  if (!dirty && !drifting) return
+  dirty = false
   if (!still.matches) dotsMat.uniforms.time.value = ms / 1000 // the cloud's drift
   renderer.clear()
   renderer.render(scene, camera)
   renderer.clearDepth()
   camera.layers.set(1)
   renderer.render(scene, camera)
-  camera.layers.set(0)
+  camera.layers.set(2)
   thumbOnly.value = 1
   renderer.render(scene, camera)
   thumbOnly.value = 0
+  camera.layers.set(0)
 })
