@@ -61,14 +61,12 @@ Walkthrough progress (`src/main.js`):
 - [ ] `subdivide.js`.
 - [ ] Phase 3: why the thumb pass works (depth buffer after pass 2 holds only the phone). Try deleting `renderer.clearDepth()` and predict what breaks first.
 
-Rebuild order (caveman mode, per max:learn-to-code-with-llms; own the core logic per evan:meta-ai-enabled-coding):
-1. Scene + camera + light + renderer  2. Load the .glb  3. Stand it up  4. Move one bone
-5. Swing a finger around its knuckle  6. Tie to a slider / the mouse. Do 5 by hand first — it's what an interviewer would probe.
-
-## Known loose ends
-- Recording FPS drop: likely full-Retina render + redraw every frame. Fix: `renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5))`, or render only on change.
-- Drag can jump if the tip's arc crosses itself at extreme angles (`ponytail:` comment in the drag code).
-- Model is low-poly (1.4k verts); knuckle creases / palm lines would need a better model.
-- The phone descends linearly across the whole drag, but the fingers only close after `squeezeFrom` (0.85). Ease it if the arrival feels early.
-- Fingers still pass through the phone in 3D. Real contact = stop each finger's curl when its tip hits the phone's edge; only needed if the camera moves.
-- Default grip amount is 1, so the site loads with the phone already in hand.
+**Unread since the GSAP change (phase 4). Read these before building anything new.** Line numbers are as of `820ec0d`.
+- [ ] Scroll (320–330): `gsap.to` on a plain object + `onUpdate` → `kit.setValue`. Predict: with `end: '+=200%'` on a 700px window, how many px from 0 to 1? What breaks without `pin: true`?
+- [ ] Invisible hand (58): `colorWrite: false` + `polygonOffset`. Why does the hand still need to exist?
+- [ ] Dot shader (72–117): `mix(drift, home, k)`, the per-dot `start`/`smoothstep`, the `-0.999 * w` near-plane trick, the dither `discard`. Predict what 50% scroll looks like without the near-plane line.
+- [ ] Dot uniforms in `apply()` (190–197): why the size is rounded to whole device pixels.
+- [ ] Sampling (333–367): cumulative triangle areas + binary search = even spread. Why fold `u + v > 1`?
+- [ ] Skinned points (369–376): borrowing the skeleton via `isSkinnedMesh`, and why `mesh.add(dots)`.
+- [ ] Phone centring (166–174): `setViewOffset` vs moving the camera. Why did moving the camera change the grip?
+- [ ] Render loop (389–): reduced-motion check.
