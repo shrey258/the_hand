@@ -6,22 +6,34 @@ import { createDialKit, createDialRoot } from 'dialkit/vanilla'
 import { subdivide } from './subdivide.js'
 
 const renderer = new THREE.WebGLRenderer({ antialias: true })
+renderer.shadowMap.enabled = true
+renderer.shadowMap.type = THREE.PCFShadowMap // honours shadow.radius for a soft edge
 renderer.setPixelRatio(devicePixelRatio)
 renderer.setSize(innerWidth, innerHeight)
 document.querySelector('#app').appendChild(renderer.domElement)
 
 const scene = new THREE.Scene()
-scene.background = new THREE.Color('#ffffff')
+renderer.setClearColor('#ffffff') // not scene.background: that would repaint over the hand in the phone pass
 
 // Eye level, straight on. Units are metres: the hand is ~0.19 tall.
 const camera = new THREE.PerspectiveCamera(35, innerWidth / innerHeight, 0.01, 10)
 
 // Key light at an angle; dim sky/ground fill so the shadow side isn't black.
 const key = new THREE.DirectionalLight('#ffffff')
+// Only the phone casts, onto the hand, so it reads as held rather than pasted on.
+// Shadow box sized to the scene (~0.2 m); layer 1 so the shadow pass sees the phone.
+key.castShadow = true
+key.shadow.mapSize.set(2048, 2048)
+Object.assign(key.shadow.camera, { left: -0.2, right: 0.2, top: 0.2, bottom: -0.2 })
+key.shadow.camera.layers.enable(1)
+key.shadow.radius = 6
+key.shadow.bias = -0.0005
 const fill = new THREE.HemisphereLight('#ffffff', '#666666')
 scene.add(key, fill)
+key.layers.enable(1) // layer 1 = the phone, drawn in its own pass (see the render loop)
+fill.layers.enable(1)
 
-// Grain: random noise used as a bump map, so light catches tiny dents in the skin.
+// Grain: random noise used acan s a bump map, so light catches tiny dents in the skin.
 function noiseTexture(size = 512) {
   const c = document.createElement('canvas')
   c.width = c.height = size
@@ -41,9 +53,21 @@ function noiseTexture(size = 512) {
 
 const skin = new THREE.MeshStandardMaterial({ bumpMap: noiseTexture() })
 
+// thumbOnly = 1 draws just the thumb: pixels mostly skinned to thumb bones (skin indices 1–4 in right.glb).
+// The render loop uses it to draw the thumb over the phone while the four fingers stay behind it.
+const thumbOnly = { value: 0 }
+skin.onBeforeCompile = (shader) => {
+  shader.uniforms.thumbOnly = thumbOnly
+  shader.vertexShader = shader.vertexShader
+    .replace('void main() {', 'varying float vThumb;\nvoid main() {')
+    .replace('#include <skinning_vertex>', '#include <skinning_vertex>\nvThumb = dot(skinWeight, step(0.5, skinIndex) * step(skinIndex, vec4(4.5)));')
+  shader.fragmentShader = shader.fragmentShader
+    .replace('void main() {', 'uniform float thumbOnly;\nvarying float vThumb;\nvoid main() {\nif (thumbOnly > 0.5 && vThumb < 0.5) discard;')
+}
+
 // Every tweakable number lives here. Sliders are [default, min, max, step].
 // "Copy" in the panel's version menu gives you the values to paste back as new defaults.
-createDialRoot({ position: 'top-right', productionEnabled: false }) // panel only in dev
+createDialRoot({ position: 'top-right', productionEnabled: import.meta.env.DEV }) // panel only in dev (false hides it everywhere)
 const kit = createDialKit('Hand', {
   reset: { type: 'action' },
   camera: { distance: [0.5, 0.2, 1.5, 0.01], height: [0, -0.15, 0.15, 0.005], fov: [35, 15, 70, 1] },
@@ -59,17 +83,29 @@ const kit = createDialKit('Hand', {
   // Grip = the "about to hold a phone" pose. Amount 0 is open, 1 is fully closed; dragging the hand sets it.
   // Angles are what each joint reaches at amount 1.
   grip: {
-    amount: [0, 0, 1, 0.01],
-    roll: [84, 0, 120, 1],
-    proximal: [0, 0, 110, 1],
-    intermediate: [76, 0, 120, 1],
-    distal: [45, 0, 90, 1],
+    amount: [1, 0, 1, 0.01],
+    roll: [85, 0, 120, 1],
+    proximal: [35, 0, 110, 1],
+    // Middle and fingertip joints, per finger, so each tip can land on the phone's edge.
+    intermediate: { index: [10, 0, 120, 1], middle: [35, 0, 120, 1], ring: [29, 0, 120, 1], pinky: [10, 0, 120, 1] },
+    distal: { index: [49, 0, 90, 1], middle: [20, 0, 90, 1], ring: [21, 0, 90, 1], pinky: [22, 0, 90, 1] },
     // How much the gaps between fingers close by amount 1: 0 = keep the open fan, 1 = parallel to the
     // middle finger, >1 = tips lean in. Fingers keep their fan until `squeezeFrom`, then ease together.
-    squeeze: [1, 0, 1.3, 0.01],
-    squeezeFrom: [0.5, 0, 1, 0.01],
+    squeeze: [1.3, 0, 1.3, 0.01],
+    squeezeFrom: [0.85, 0, 1, 0.01],
   },
-}, { id: 'hand', persist: import.meta.env.DEV, onAction: (path) => path === 'reset' && kit.resetValues() })
+  // Phone sits in world space, placed for the end state (grip amount 1). Position in metres.
+  phone: {
+    x: [-0.106, -0.15, 0.15, 0.001], y: [-0.049, -0.15, 0.15, 0.001], z: [0.027, -0.1, 0.15, 0.001],
+    // How far above its resting spot the phone starts at grip 0; dragging the hand brings it down.
+    // 0.3 clears the top of the frame at the default camera.
+    drop: [0.3, 0, 0.5, 0.005],
+  },
+},{ id: 'hand', persist: import.meta.env.DEV, onAction: (path) => path === 'reset' && kit.resetValues() })
+
+// Phone: iPhone 16 by Wes (sketchfab.com/wimell). Modelled in cm, so scale to metres.
+const phone = new THREE.Group()
+scene.add(phone)
 
 let pose = () => {} // these two are replaced once the model has loaded
 let smooth = () => {}
@@ -92,12 +128,47 @@ function apply(v) {
 
   pose(v.spread, v.grip)
   smooth(v.skin.smoothness)
+
+  phone.position.set(v.phone.x, v.phone.y + v.phone.drop * (1 - v.grip.amount), v.phone.z)
 }
 kit.subscribe(apply)
 
+// Whatever is drawn on this canvas shows on the phone's screen.
+const screen = document.createElement('canvas')
+screen.width = 590
+screen.height = 1280
+{
+  const ctx = screen.getContext('2d')
+  const g = ctx.createLinearGradient(0, 0, 0, screen.height)
+  g.addColorStop(0, '#6a8cff')
+  g.addColorStop(1, '#f0a0c0')
+  ctx.fillStyle = g
+  ctx.fillRect(0, 0, screen.width, screen.height)
+  ctx.fillStyle = '#fff'
+  ctx.font = '600 160px system-ui'
+  ctx.textAlign = 'center'
+  ctx.fillText('9:41', screen.width / 2, 360)
+}
+const screenTex = new THREE.CanvasTexture(screen)
+screenTex.colorSpace = THREE.SRGBColorSpace
+// The screen mesh's UVs only span u 0.018–0.48 and run top-down, so stretch the canvas over that
+// range and skip three's default vertical flip.
+screenTex.repeat.x = 1 / (0.48 - 0.018)
+screenTex.offset.x = -0.018 * screenTex.repeat.x
+screenTex.flipY = false
+
+new GLTFLoader().load('/models/iphone.glb', ({ scene: model }) => {
+  model.scale.setScalar(0.01)
+  const glass = model.getObjectByName('Object_18') // the display: its own mesh and material
+  glass.material.emissiveMap = screenTex
+  glass.material.emissiveIntensity = 0.85 // a touch under the lit skin so the screen doesn't glow off the hand
+  model.traverse((o) => { o.layers.set(1); o.castShadow = true })
+  phone.add(model)
+})
+
 new GLTFLoader().load('/models/right.glb', ({ scene: hand }) => {
   let mesh
-  hand.traverse((o) => { if (o.isMesh) { o.material = skin; mesh = o } })
+  hand.traverse((o) => { if (o.isMesh) { o.material = skin; o.receiveShadow = true; mesh = o } })
 
   // Each level splits every triangle into 4 (1.4k → 5k → 21k → 87k vertices). Cached per level.
   const levels = [mesh.geometry]
@@ -129,8 +200,6 @@ new GLTFLoader().load('/models/right.glb', ({ scene: hand }) => {
   const rest = new Map()
   hand.traverse((o) => { if (o.isBone) rest.set(o, [o.position.clone(), o.quaternion.clone()]) })
 
-  // Spread: swing each finger around the palm normal, pivoting at its knuckle.
-  // All bones in this model are siblings, so every bone of the finger is moved explicitly.
   // Swing a list of bones rigidly around an axis through a pivot (all in the model's space).
   const swing = (bones, pivot, axis, rad) => {
     const q = new THREE.Quaternion().setFromAxisAngle(axis, rad)
@@ -172,7 +241,7 @@ new GLTFLoader().load('/models/right.glb', ({ scene: hand }) => {
 
       // 2. Curl: each joint bends everything past it toward the palm, around the finger's own side axis.
       const hinge = across.clone().applyAxisAngle(normal, rad(side))
-      const bends = [grip.proximal, grip.intermediate, grip.distal]
+      const bends = [grip.proximal, grip.intermediate[finger], grip.distal[finger]]
       bends.forEach((b, i) => swing(bones.slice(i), bones[i].position.clone(), hinge, rad(b * t)))
     }
 
@@ -217,4 +286,18 @@ addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight)
 })
 
-renderer.setAnimationLoop(() => renderer.render(scene, camera))
+// Three passes: hand, then wipe depth and draw the phone over it (so no finger shows through the phone's
+// body), then the thumb again, depth-tested against the phone, so it stays in front where it really is.
+// ponytail: only right from this fixed camera; real contact needs per-finger collision.
+renderer.autoClear = false
+renderer.setAnimationLoop(() => {
+  renderer.clear()
+  renderer.render(scene, camera)
+  renderer.clearDepth()
+  camera.layers.set(1)
+  renderer.render(scene, camera)
+  camera.layers.set(0)
+  thumbOnly.value = 1
+  renderer.render(scene, camera)
+  thumbOnly.value = 0
+})
