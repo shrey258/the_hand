@@ -1,74 +1,96 @@
-# Handoff — the_hand (2026-09-25, updated after phase 3)
+# Handoff — the_hand (2026-09-27, OTA session)
+
+**Next session: promote the OTA broadcast from `proto/ota/` into `src/main.js`, then design the phone screen.** Everything below was checked this session unless marked *unverified*.
 
 ## Where it stands
 - Live: https://thehand-iota.vercel.app (Vercel team **shrey258s-projects**, never `not-a-number-labs`). `thehand.vercel.app` is someone else's.
-- **Branches:** Vercel's production branch is now `production` (still @ `2f93826`, the pre-phone version). `main` @ `70293eb` has the phone work and only builds previews.
-- **Go live:** `git switch production && git merge main && git push`. Don't use `vercel deploy --prod` any more; it ships the local folder to the live site from whatever branch you're on.
-- **Dev:** `npm run dev` shows the DialKit panel + Reset. Production hides it and doesn't persist values.
-  - Code defaults = your last Copy paste. Hit **Reset** if the browser shows old saved values.
-- The `productionEnabled: false` from the last commit had hidden the panel in dev too. It's now `import.meta.env.DEV`.
+- `main` = `production` = `8a7e39c` (the hand + phone, no OTA). Vercel only deploys `production`; `main` builds previews.
+- **Branch `ota-broadcast`** holds this session's work: the prototype in `proto/ota/` and this file. Production code (`src/`) is untouched.
+- **Go live:** `git switch production && git merge main && git push`. Never `vercel deploy --prod`.
+- **Dev:** `npm run dev`, then open **`/proto/ota/`**. `vite build` only builds the root `index.html`, so the proto never ships.
+  - The proto's DialKit saves under its own id (`ota-proto`). Hit **Reset** in the panel if the browser shows old values.
 
-## What was built (phase 1 + 2, ~1h50 total)
-- Rigged WebXR "generic-hand" right.glb, stood upright palm-to-camera by measuring up/across/palm-normal and rotating the model.
-- Grey grainy skin: `MeshStandardMaterial` + random-noise bump map.
-- Round fingertips: `src/subdivide.js` splits every triangle into 4 and lifts new vertices onto the curve using normals (PN-triangle midpoint). Check: `node src/subdivide.test.js`.
-- Drag to phone grip: `pose()` = spread → per-joint curl → wrist roll; drag samples the middle fingertip's screen arc and follows the mouse. `squeeze` closes the finger fan relative to the middle finger (`fanRest`).
+## The OTA story (what `proto/ota/` does)
+The goal: after the phone reaches the customer, the hand turns into our OTA server, which pushes an update to the phone.
 
-## Phase 3: phone in the hand (~1h40, guessed 30 min)
-- **Model:** `public/models/iphone.glb`, iPhone 16 by Wes (sketchfab.com/wimell).
-  - License is Sketchfab Standard: **credit him when posting**.
-  - Modelled in cm, so scaled by 0.01.
-- **Screen:** node `Object_18` (three names meshes by node; the glTF mesh is `Object_3`).
-  - A `<canvas>` is its `emissiveMap`. Draw on the canvas to change what shows.
-  - Its UVs only span u 0.018–0.48 and run top-down, so the texture uses `repeat`/`offset` plus `flipY = false`.
-- **Placement:** the phone lives in world space, tuned for grip = 1 with the Phone x/y/z sliders.
-  - `drop` lifts it by `drop × (1 − amount)`, so the same drag brings it down from above.
-- **Grip:** intermediate and distal are now per finger (`grip.intermediate[finger]`, `grip.distal[finger]`). Proximal is still shared.
-- **Occlusion is a render trick, not collision.** Three passes each frame:
-  1. Hand.
-  2. Clear depth, then draw the phone (layer 1) on top.
-  3. The hand again with `thumbOnly = 1`: the shader discards pixels not mostly skinned to thumb bones (skin indices 1–4), depth-tested against the phone.
-  - Only correct from this fixed camera (`ponytail:` comment).
-  - The white background is `setClearColor`, not `scene.background`, because a background would repaint over pass 1.
-- **Shadow:** the key light casts, the phone casts, the hand receives. The shadow camera also sees layer 1.
-  - `PCFSoftShadowMap` is removed in this three version, so it uses `PCFShadowMap` + `radius`.
+`proto/ota/main.js` is a copy of `src/main.js` plus the OTA stages. The scroll is now pinned for 670% (`amount` 0 → 3.35, `:458`):
 
-## Phase 4: scroll + dots (branch `dither-dots`)
-- **Scroll drives the grip** (`d7d2c81` on main): GSAP ScrollTrigger pins `#app` for 200% of the window height and scrubs `grip.amount` 0 → 1 via `kit.setValue`. The mouse drag is gone; the default amount is 0.
-- **The hand is dots**, like vellabs' `docs/MOTION.md:195`: each dot has a cloud spot and a home on the skin, blended per dot by scroll with its own start time (`seed`, `travel`).
-  - Homes are area-weighted random points on the skin. Each borrows the nearest corner's bone weights, so it rides the grip (`ponytail:` comment: knuckles may tear).
-  - `Points` borrows the hand's skeleton via `isSkinnedMesh` (three internals, recheck after upgrades).
-  - The real hand only writes depth (`colorWrite: false`), so back-side dots stay hidden. Dots still in flight are forced to the near plane so the invisible hand doesn't cut a hole in the cloud.
-  - Dither: lit skin drops dots (`shade`); cloud dots are pale (`cloudInk`) and darken as they land. The Count slider sets the draw range of 500k pre-sampled dots.
-- **Phone centred** with `camera.setViewOffset` (a shift lens). Moving the camera instead changed the viewing angle and broke the grip look.
-- Lost: the phone's shadow on the hand. The Skin colour/roughness/grain/wireframe sliders now do nothing.
+| Scroll `amount` | Stage | DialKit value |
+|---|---|---|
+| 0 – 1 | Grip, as before | `grip.amount` |
+| 1 – 1.25 | Hold on the lit screen | — |
+| 1.25 – 2.25 | Hand → cloud → server | `ota.morph` |
+| 2.35 – 3.35 | Server broadcasts to the phone | `ota.push` |
 
-## Posting (not done yet)
-- Thread under the video post: reply 1 = what it is + link, reply 2 = fingertip story, reply 3 = DialKit shoutout. **Verify Josh Puckett's X handle before tagging.**
+- **Server shape** (`icon()`, `:620`): the classic server glyph, three stacked slabs with lights and slots. Only the faces the camera sees are sampled (front, top, left), so the server's dots skip the depth test.
+- **Morph** (`:84`): the dots dissolve back into the opening cloud, then condense into the server (style 1).
+- **Broadcast** (`:115`): the server's spare dots (the 80% its `keep` test hides) become Wi-Fi arcs.
+  - Waves are **scroll-driven**: scrolling down sends them one at a time, scrolling up pulls them back.
+  - Each wave eases out, starts thick and thins as it spreads, and fades into the phone's right edge.
+  - They go quiet at 85–95% of the push, when the card switches to "Updated".
+- **Phone screen** (`drawScreen`, `:311`): an "Updating to v2.4…" card with a progress bar that follows the push, then "Updated to v2.4 / Over the air, just now". **Placeholder**: the phone design is his to do later.
+- **Knobs:** DialKit → Ota: server `x/y/z/scale/yaw`, `ink`, `keep`, and `waves` → `trips/count/spread/weight`.
 
-## Learning — pick up here tomorrow
-Goal: be able to rebuild this without AI. Docs allowed; AI only for hints (where to look → the idea → one line max, never full code). State a time guess before each step.
+## Decisions (from the picker rounds)
+- **Server shape + morph: "Through the cloud"** (icon slabs, via the cloud).
+  - Rejected: **Rack** (a straight morph into a 19" cabinet; reads instantly but looks like stock art). **Assembly line** (fingertips peel off and build a tower bottom-up; busy, and a blob mid-way).
+- **Link to the phone: Broadcast.** It "serves the idea better" than the others.
+  - Rejected: **Cable** (a wire contradicts "over the air"). **Pour** (dots stream into the screen; busiest, and it hides the phone's top edge).
+- **Waves follow the scroll, not a clock.** Time-driven waves were tried and rejected: he likes that scrolling up "takes back the waves".
+- **Waves need energy.** The first version had gaps in the arcs; the cause was correlated `fract(u * constant)` hashes. Fixed with `rnd()` (`:67`), a sin hash. Never derive several random values from one number by multiplying it by constants.
 
-Walkthrough progress (`src/main.js`):
-- [x] Part 1 (8–22): devicePixelRatio, domElement, camera fov/near/far (units = metres). **Lights not yet understood — revisit** (key = sun, one direction, gives shape; fill = sky above/ground below, stops the dark side going black; try Fill = 0).
-- [x] Part 2 (24–42): noise texture + bump map (fakes dents via light, outline unchanged).
-- [x] Part 3 (74–97): `apply()` = "make the scene match these values"; called by DialKit subscribe, after load, and via drag → setValue.
-- [ ] Part 4 (111–126): standing the hand up (basis from up/across/normal).
-- [ ] Part 5 (134–180): `swing()` + `pose()`. Unanswered questions:
-  1. Why `sub(pivot)` → rotate → `add(pivot)`? What breaks without it?
+## To promote (next session)
+1. Copy the OTA pieces from `proto/ota/main.js` into `src/main.js`: the `ota` DialKit group, the shader's morph + link blocks, `icon()`/`boxSampler()`, `buildServer`, `drawScreen`, and the longer scroll.
+2. Drop the Cable and Pour branches and `linkStyle`. Drop the Rack/Assembly morph styles (`style` 0 and 2) and `mTravel`.
+3. Drop the proto-only bits: the picker (`index.html`, `picker.css`, the `// Picker` block at `:634`) and `window.kit` (`:303`).
+4. Delete `proto/`.
+5. **Fix before shipping:** once `morph > 0` the render loop draws every frame (`:577`) because the server lights blink on a clock. That loses the idle-GPU win. Options: stop the blink, or only redraw while the pinned section is on screen.
+6. Reduced motion: the lights freeze and the waves still scrub with the scroll. *Unverified* whether that's acceptable.
+
+## Posting (in progress)
+- The video was recorded: a 14s loop down and back up, 1:1, exported at 1080p max quality in Cursorful. *Unverified* whether it's been posted.
+- Caption direction: an Endgame re-release tie-in, e.g. "For the Endgame re-release, I made the snap in reverse". *Unverified:* re-release timing.
+- **Credit:** "iPhone 16 by Wes, sketchfab.com/wimell". He has no X account linked or findable, so don't guess a handle.
+- Thread plan: reply 1 = what it is + link, reply 2 = fingertip story, reply 3 = DialKit shoutout (**verify Josh Puckett's X handle before tagging**).
+- **Not done:** `og:`/`twitter:` meta tags and a preview image, so an X link shows as a bare URL. Offered; he hasn't decided.
+
+## Learning tracker
+Goal: be able to rebuild this without AI. Docs are allowed; AI only for hints (where to look → the idea → one line max, never full code). State a time guess before each step. At session start, remind him what's unchecked here before building.
+
+Walkthrough (`src/main.js`, line numbers as of `8a7e39c`):
+- [x] Renderer, camera, noise texture (since deleted), `apply()`. **Lights still not understood — revisit** (key = sun, one direction, gives shape; fill = sky/ground, stops the dark side going black).
+- [ ] Standing the hand up (basis from up/across/normal).
+- [ ] `swing()` + `pose()`. Open questions:
+  1. Why `sub(pivot)` → rotate → `add(pivot)`?
   2. Why does each bone need both a position and a quaternion change?
-- [ ] Part 6 (181–210): drag along the arc.
-- [ ] `subdivide.js`.
-- [ ] Phase 3: why the thumb pass works (depth buffer after pass 2 holds only the phone). Try deleting `renderer.clearDepth()` and predict what breaks first.
+- [ ] `subdivide.js` (check: `node src/subdivide.test.js`).
+- [ ] The thumb pass: why it works (after pass 2 the depth buffer holds only the phone).
 
-**Unread since the GSAP change (phase 4). Read these before building anything new.** Line numbers are as of `820ec0d`.
-- [ ] Scroll (320–330): `gsap.to` on a plain object + `onUpdate` → `kit.setValue`. Predict: with `end: '+=200%'` on a 700px window, how many px from 0 to 1? What breaks without `pin: true`?
-- [ ] Invisible hand (58): `colorWrite: false` + `polygonOffset`. Why does the hand still need to exist?
-- [ ] Dot shader (72–117): `mix(drift, home, k)`, the per-dot `start`/`smoothstep`, the `-0.999 * w` near-plane trick, the dither `discard`. Predict what 50% scroll looks like without the near-plane line.
-- [ ] Dot uniforms in `apply()` (190–197): why the size is rounded to whole device pixels.
-- [ ] Sampling (333–367): cumulative triangle areas + binary search = even spread. Why fold `u + v > 1`?
-- [ ] Skinned points (369–376): borrowing the skeleton via `isSkinnedMesh`, and why `mesh.add(dots)`.
-- [ ] Phone centring (166–174): `setViewOffset` vs moving the camera. Why did moving the camera change the grip?
-- [ ] Render loop (389–): reduced-motion check.
-- [ ] Perf pass (uncommitted, 64 → 120 FPS): pixel-ratio cap, shadows deleted, `MeshBasicMaterial` depth hand, thumb dots split onto layer 2 (`split()`), `dirty` flag in the render loop. Why does the thumb pass now use `camera.layers.set(2)`?
-- [ ] Easing (uncommitted): `easeOut` in `apply()` for the grip and the phone (`phone.land`), the screen lighting up (`phone.screenOn`), and the two-stage `gather`/`land` in the dot shader. Why did the grip end up ease-in-out while the phone is ease-out?
+**Unread since the GSAP change. He asked to be told to read these.**
+- [ ] Scroll (310–320): `gsap.to` on a plain object + `onUpdate` → `kit.setValue`. How many px from 0 to 1 on a 700px window? What breaks without `pin: true`?
+- [ ] Invisible hand (32): `colorWrite: false` + `polygonOffset`. Why does the hand still need to exist?
+- [ ] Dot shader (48–97): `mix(drift, home, k)`, the two-stage `gather`/`land`, the near-plane trick and its 5 mm cutoff, the dither `discard`.
+- [ ] Dot uniforms (~180): why the size is rounded to whole device pixels.
+- [ ] Sampling (323–358): cumulative triangle areas + binary search. Why fold `u + v > 1`?
+- [ ] Thumb split + skinned points (359–388): `isSkinnedMesh`, layer 2, why `mesh.add(pts)`.
+- [ ] Phone centring (155–160): `setViewOffset` vs moving the camera.
+- [ ] Easing (~171): why the grip is ease-in-out but the phone is ease-out.
+- [ ] Render loop (400–418): the `dirty` flag and the reduced-motion check.
+
+**New this session (`proto/ota/main.js`), unread:**
+- [ ] The wave maths (`:115`): how `push * trips - ring / count` + `fract` makes waves leave one at a time and reverse on scroll-up.
+- [ ] Why the server's dots can skip the depth test (only camera-facing faces are sampled).
+- [ ] Pairing dots to server spots by rank (`buildServer`, `:538`), and why the couriers are "spare" dots.
+
+## Known loose ends
+- The phone's shadow on the hand is gone (shadows removed for perf).
+- The knuckles may tear when bent hard: each dot copies its nearest corner's bone weights (`ponytail:` comment).
+- The skinned points rely on three.js internals (`isSkinnedMesh` flag). Recheck after upgrading three.
+- Portrait phones: the hand sits right of the centred phone and may be cut off. *Unverified.* The server sits further right still, so this is worse in the proto.
+- The fingers pass through the phone in 3D; the occlusion is a render trick that only works from this fixed camera.
+- Once the hand becomes the server, the phone floats on its own. Intended for now.
+
+## Suggested skills
+- `own-the-decision`: first. Get his goal for the promote step and a time guess.
+- `emil-performance`: for step 5 of the promote list (the always-on render loop).
+- `emil-prototype`: for the phone screen, if he's undecided what it should show.
