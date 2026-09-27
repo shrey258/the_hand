@@ -50,15 +50,21 @@ const dotsMat = new THREE.ShaderMaterial({
     progress: { value: 0 }, travel: { value: 0.4 }, time: { value: 0 }, size: { value: 2 },
     cloudSize: { value: 0.3 }, gather: { value: 0.6 }, cloudInk: { value: 0.3 }, shade: { value: 0.7 }, color: { value: new THREE.Color() },
     lightDir: { value: key.position }, thumbOnly,
+    morph: { value: 0 }, serverAt: { value: new THREE.Vector3() }, serverScale: { value: 1 }, serverYaw: { value: 0 }, serverInk: { value: 0.5 }, serverKeep: { value: 0.4 }, push: { value: 0 }, waveSpeed: { value: 2 }, waveCount: { value: 3 }, waveSpread: { value: 1.4 }, waveInk: { value: 0.6 }, phoneAt: { value: new THREE.Vector3() },
   },
   vertexShader: `
     #include <common>
     #include <skinning_pars_vertex>
-    uniform float progress, travel, time, size, cloudSize, gather;
+    uniform float progress, travel, time, size, cloudSize, gather, morph, serverScale, serverYaw, serverInk, serverKeep, push, waveSpeed, waveCount, waveSpread, waveInk;
+    uniform vec3 serverAt, phoneAt;
     uniform vec3 lightDir;
     attribute vec3 cloud;
-    attribute float seed;
-    varying float vLit, vSeed, vThumb, vK;
+    attribute float seed, led;
+    attribute vec3 server, serverN;
+    varying float vLit, vSeed, vThumb, vK, vM, vInk, vLed, vKeep, vLink, vCourierRnd;
+    // Real hash: fract(u * constant) lines up into patterns, which left gaps in the arcs.
+    float rnd(float u, float k) { return fract(sin(u * 91.345 + k * 47.853) * 43758.5453); }
+    float io(float x) { x = clamp(x, 0.0, 1.0); return x < 0.5 ? 4.0 * x * x * x : 1.0 - pow(-2.0 * x + 2.0, 3.0) / 2.0; }
     void main() {
       #include <skinbase_vertex>
       #include <beginnormal_vertex>
@@ -74,24 +80,82 @@ const dotsMat = new THREE.ShaderMaterial({
       float land = 1.0 - pow(1.0 - clamp((progress - start) / travel, 0.0, 1.0), 3.0);
       float k = mix(gather * progress, 1.0, land);
       vec3 pos = mix(drift, home, k);
+      // OTA morph: hand → server. m = how far this dot is along its trip to the server.
+      float m = 0.0, away = 0.0;
+      mat3 yaw = mat3(cos(serverYaw), 0.0, -sin(serverYaw), 0.0, 1.0, 0.0, sin(serverYaw), 0.0, cos(serverYaw));
+      vec3 server = serverAt + yaw * server * serverScale;
+      vec3 srvN = yaw * serverN;
+      // The hand dissolves back into the opening cloud, then the cloud condenses into the server.
+      away = io((morph - seed * 0.25) / 0.3);
+      m = io((morph - 0.5 - seed * 0.2) / 0.3);
+      pos = mix(mix(pos, drift, away), server, m);
+      // Link: the server's spare dots (the ones its keep test hides) carry the update to the phone.
+      // vLink = share of them drawn; 0 = not a courier right now.
+      vLink = 0.0;
+      float h = fract(seed * 13.7), u = (h - serverKeep) / 0.1;
+      if (u > 0.0 && u < 1.0 && m > 0.999 && push > 0.0) {
+        vec3 port = serverAt + yaw * vec3(-0.07, 0.0, 0.0) * serverScale; // left edge of the middle slab
+        // Couriers are picked by a narrow band of seed, so their randomness comes from u (which spans 0–1 finely).
+        vCourierRnd = rnd(u, 4.0);
+        // Broadcast: arcs ripple out of the server toward the phone.
+        // Waves ride the scroll: scrolling down sends them, scrolling up pulls them back into the server.
+        // Each wave grows from the server until it touches the phone's edge, then fades into it.
+        vec3 dock = phoneAt + vec3(0.037, 0.0, 0.0); // the phone's right edge
+        vec2 aim = normalize(dock.xy - port.xy);
+        float ring = floor(rnd(u, 5.0) * waveCount);
+        float sent = push * waveSpeed - ring / waveCount; // waves leave one at a time, not all at once
+        float r = sent < 0.0 ? 0.0 : fract(sent); // 0 at the server → 1 at the phone
+        float a = (rnd(u, 6.0) - 0.5) * waveSpread;
+        vec2 d = vec2(aim.x * cos(a) - aim.y * sin(a), aim.x * sin(a) + aim.y * cos(a));
+        // Ease-out: each wave bursts off the server and slows as it reaches the phone. It's born thick and
+        // thins as it spreads, like energy spending itself. Two hashes averaged give the stroke soft edges.
+        float e = 1.0 - (1.0 - r) * (1.0 - r);
+        float radius = mix(0.012, distance(dock.xy, port.xy), e) + (rnd(u, 7.0) + rnd(u, 8.0) - 1.0) * mix(0.005, 0.0015, e);
+        pos = vec3(port.xy + d * radius, mix(port.z, dock.z, r));
+        float tips = 1.0 - smoothstep(0.55, 1.0, abs(a) / (0.5 * waveSpread)); // arcs taper at their ends
+        float life = smoothstep(0.0, 0.05, r) * (1.0 - smoothstep(0.8, 1.0, r)); // pop out, then sink into the phone
+        float on = smoothstep(0.0, 0.08, push) * (1.0 - smoothstep(0.85, 0.95, push)); // silent once installed (the card reads "Updated" from 0.95)
+        vLink = waveInk * tips * life * on * mix(0.3, 1.0, e); // longer arcs spend more of their dots, so the ink stays even
+        if (vLink <= 0.0) vLink = -1.0; // moved off the server but not drawn: hide it, don't fall back to server shading
+      }
       gl_Position = projectionMatrix * viewMatrix * vec4(pos, 1.0);
       // Far from home: draw in front of everything, or the invisible hand would cut a hand-shaped hole in the
       // cloud. Within 5 mm, depth-test like a landed dot, or dots behind the hand show through and the hand
       // goes dark just before the grip, then pops lighter as they land.
-      if (distance(pos, home) > 0.005) gl_Position.z = -0.999 * gl_Position.w;
+      // Server dots never depth-test: only its camera-facing faces are sampled, so nothing needs hiding.
+      if (distance(pos, home) > 0.005 || m > 0.0) gl_Position.z = -0.999 * gl_Position.w;
       gl_PointSize = size;
-      vLit = k * max(dot(normalize(mat3(modelMatrix) * objectNormal), normalize(lightDir)), 0.0);
+      vLit = (1.0 - m) * k * (1.0 - away) * max(dot(normalize(mat3(modelMatrix) * objectNormal), normalize(lightDir)), 0.0);
+      // Server dots skip the lit dither: they keep a share (keep) of their dots, fewer on faces turned to the light.
+      vKeep = mix(1.0, serverKeep * (1.0 - serverInk * max(dot(srvN, normalize(lightDir)), 0.0)), m);
+      vM = max(m, away);
+      vInk = max(mix(k, 0.0, away), m);
+      vLed = m > 0.999 ? led : 0.0;
       vSeed = fract(seed * 97.0);
       vK = k;
     }`,
   fragmentShader: `
-    uniform float shade, thumbOnly, cloudInk;
+    uniform float shade, thumbOnly, cloudInk, time;
     uniform vec3 color;
-    varying float vLit, vSeed, vThumb, vK;
+    varying float vLit, vSeed, vThumb, vK, vM, vInk, vLed, vKeep, vLink, vCourierRnd;
     void main() {
-      if (thumbOnly > 0.5 && (vThumb < 0.5 || vK < 1.0)) discard; // over the phone: only thumb dots that have landed
+      if (thumbOnly > 0.5 && (vThumb < 0.5 || vK < 1.0 || vM > 0.0)) discard; // over the phone: only thumb dots that have landed
+      if (vLink < 0.0) discard; // couriers first: one may have been paired with an LED spot
+      if (vLink > 0.0) { // a courier: its own density, no lighting
+        if (vCourierRnd > vLink) discard;
+        gl_FragColor = vec4(color, 1.0);
+        #include <colorspace_fragment>
+        return;
+      }
+      if (vLed > 0.0) { // status LEDs: solid, blinking at their own phase
+        if (fract(time * 0.7 + vLed) > 0.55) discard;
+        gl_FragColor = vec4(color, 1.0);
+        #include <colorspace_fragment>
+        return;
+      }
+      if (fract(vSeed * 13.7) > vKeep) discard;
       if (vLit * shade > vSeed) discard; // dither: lit skin keeps fewer dots, shadowed skin keeps them all
-      gl_FragColor = vec4(mix(vec3(1.0), color, mix(cloudInk, 1.0, vK)), 1.0); // cloud is pale grey, ink as it lands
+      gl_FragColor = vec4(mix(vec3(1.0), color, mix(cloudInk, 1.0, vInk)), 1.0); // cloud is pale grey, ink as it lands
       #include <colorspace_fragment>
     }`,
 })
@@ -136,6 +200,15 @@ const kit = createDialKit('Hand', {
     land: [0.8, 0.3, 1, 0.01],
     // The screen lights up over this last stretch of the scroll: the payoff once the grip is done.
     screenOn: [0.92, 0.5, 1, 0.01],
+  },
+  // OTA: after the grip, scrolling on morphs the hand's dots into our update server, which then broadcasts to the phone.
+  ota: {
+    morph: [0, 0, 1, 0.01],
+    push: [0, 0, 1, 0.01], // the update travelling server → phone; scroll sets it
+    // Broadcast waves: trips each wave makes over the push, how many in flight, the arc's angle, and its ink.
+    waves: { trips: [2, 0.5, 6, 0.1], count: [3, 1, 6, 1], spread: [80, 20, 160, 1], weight: [0.6, 0.05, 1, 0.01] }, // weight: share of wave dots drawn
+    x: [0.03, -0.2, 0.2, 0.001], y: [-0.07, -0.2, 0.2, 0.001], z: [0, -0.2, 0.2, 0.001], scale: [0.55, 0.2, 2, 0.01],
+    yaw: [20, -90, 90, 1], ink: [0.6, 0, 1, 0.01], keep: [0.2, 0.05, 1, 0.01], // keep: share of dots the server shows; ink: how much the lit faces fade
   },
 },{ id: 'hand', persist: import.meta.env.DEV, onAction: (path) => path === 'reset' && kit.resetValues() })
 
@@ -186,6 +259,19 @@ function apply(v) {
 
   // The phone slows into its resting spot and lands at `land`, before the fingers finish closing.
   phone.position.set(v.phone.x, v.phone.y + v.phone.drop * (1 - easeOut(Math.min(t / v.phone.land, 1))), v.phone.z)
+  u.morph.value = v.ota.morph
+  u.serverAt.value.set(v.ota.x, v.ota.y, v.ota.z)
+  u.serverScale.value = v.ota.scale
+  u.serverYaw.value = THREE.MathUtils.degToRad(v.ota.yaw)
+  u.serverInk.value = v.ota.ink
+  u.serverKeep.value = v.ota.keep
+  u.push.value = v.ota.push
+  u.waveSpeed.value = v.ota.waves.trips
+  u.waveCount.value = v.ota.waves.count
+  u.waveSpread.value = THREE.MathUtils.degToRad(v.ota.waves.spread)
+  u.waveInk.value = v.ota.waves.weight
+  u.phoneAt.value.set(v.phone.x, v.phone.y, v.phone.z)
+  if (glass) drawScreen(THREE.MathUtils.smoothstep(v.ota.push, 0.1, 0.95))
   if (glass) glass.material.emissiveIntensity = 0.85 * THREE.MathUtils.smoothstep(t, v.phone.screenOn, 1) // 0.85: a touch under full so it doesn't glow off the page
   dirty = true
 }
@@ -195,7 +281,12 @@ kit.subscribe(apply)
 const screen = document.createElement('canvas')
 screen.width = 590
 screen.height = 1280
-{
+let drawn = -1
+// The lock screen, plus an update card once the push starts. p = install progress 0–1.
+// ponytail: placeholder card; the phone screen's real design is still to come.
+function drawScreen(p) {
+  if (p === drawn) return
+  drawn = p
   const ctx = screen.getContext('2d')
   const g = ctx.createLinearGradient(0, 0, 0, screen.height)
   g.addColorStop(0, '#6a8cff')
@@ -206,6 +297,33 @@ screen.height = 1280
   ctx.font = '600 160px system-ui'
   ctx.textAlign = 'center'
   ctx.fillText('9:41', screen.width / 2, 360)
+  if (p > 0) {
+    // The card eases in over the first 6% (fade + 16px rise), so it arrives rather than pops.
+    const k = 1 - (1 - Math.min(p / 0.06, 1)) ** 3
+    const done = p >= 0.999
+    ctx.save()
+    ctx.globalAlpha = k
+    ctx.translate(0, 16 * (1 - k))
+    ctx.fillStyle = 'rgba(255,255,255,0.92)'
+    ctx.beginPath(); ctx.roundRect(40, 880, 510, 200, 48); ctx.fill()
+    ctx.textAlign = 'left'
+    ctx.fillStyle = '#111'
+    ctx.font = '600 40px system-ui'
+    ctx.fillText(done ? 'Updated to v2.4' : 'Updating to v2.4…', 84, 958)
+    ctx.fillStyle = '#6b6b70'
+    ctx.font = '400 32px system-ui'
+    if (done) {
+      ctx.fillText('Over the air, just now', 84, 1012)
+    } else {
+      // Track and fill share one pill shape; the fill never drops below a circle so it doesn't look broken.
+      ctx.fillStyle = 'rgba(0,0,0,0.08)'
+      ctx.beginPath(); ctx.roundRect(84, 996, 422, 14, 7); ctx.fill()
+      ctx.fillStyle = '#111'
+      ctx.beginPath(); ctx.roundRect(84, 996, Math.max(14, 422 * p), 14, 7); ctx.fill()
+    }
+    ctx.restore()
+  }
+  screenTex.needsUpdate = true
 }
 const screenTex = new THREE.CanvasTexture(screen)
 screenTex.colorSpace = THREE.SRGBColorSpace
@@ -214,6 +332,7 @@ screenTex.colorSpace = THREE.SRGBColorSpace
 screenTex.repeat.x = 1 / (0.48 - 0.018)
 screenTex.offset.x = -0.018 * screenTex.repeat.x
 screenTex.flipY = false
+drawScreen(0)
 
 new GLTFLoader().load('/models/iphone.glb', ({ scene: model }) => {
   model.scale.setScalar(0.01)
@@ -310,11 +429,17 @@ new GLTFLoader().load('/models/right.glb', ({ scene: hand }) => {
   // Scroll drives the grip: pin the canvas for two screens of scrolling, and map that distance to amount 0 → 1.
   // scrub: 1 = the hand takes ~1 s to catch up with the scrollbar, which is what smooths wheel steps.
   gsap.registerPlugin(ScrollTrigger)
+  // 0–1 grip, 1–1.25 hold on the lit screen, 1.25–2.25 morph into the server, 2.35–3.35 push the update.
   gsap.to({ amount: 0 }, {
-    amount: 1,
+    amount: 3.35,
     ease: 'none', // linear: easing already lives in the pose (squeezeFrom, smoothstep)
-    scrollTrigger: { trigger: '#app', pin: true, start: 'top top', end: '+=200%', scrub: 1 },
-    onUpdate() { kit.setValue('grip.amount', this.targets()[0].amount) }, // re-poses via subscribe
+    scrollTrigger: { trigger: '#app', pin: true, start: 'top top', end: '+=670%', scrub: 1 },
+    onUpdate() {
+      const a = this.targets()[0].amount
+      kit.setValue('grip.amount', Math.min(a, 1))
+      kit.setValue('ota.morph', THREE.MathUtils.clamp(a - 1.25, 0, 1))
+      kit.setValue('ota.push', THREE.MathUtils.clamp(a - 2.35, 0, 1))
+    }, // re-poses via subscribe
   })
 
   apply(kit.getValues())
@@ -383,6 +508,21 @@ new GLTFLoader().load('/models/right.glb', ({ scene: hand }) => {
   thumbDots.layers.enable(2)
   mesh.layers.enable(2)
   dots = [split(false), thumbDots]
+
+  // Server targets: each dot gets a random spot on the server's faces, plus that face's normal (for
+  // shading) and whether the spot is a status light.
+  const sample = serverSampler()
+  for (const pts of dots) {
+    const n = pts.geometry.attributes.position.count
+    const S = new Float32Array(n * 3), SN = new Float32Array(n * 3), L = new Float32Array(n)
+    for (let i = 0; i < n; i++) {
+      const t = sample()
+      S.set(t.p, i * 3); SN.set(t.n, i * 3); L[i] = t.led
+    }
+    pts.geometry.setAttribute('server', new THREE.BufferAttribute(S, 3))
+    pts.geometry.setAttribute('serverN', new THREE.BufferAttribute(SN, 3))
+    pts.geometry.setAttribute('led', new THREE.BufferAttribute(L, 1))
+  }
   apply(kit.getValues()) // sets their draw ranges
   document.querySelector('#loading').classList.add('done') // the first frame with the dots is next
 })
@@ -401,7 +541,7 @@ const still = matchMedia('(prefers-reduced-motion: reduce)')
 renderer.setAnimationLoop((ms) => {
   // Draw only when something changed or the cloud is still drifting. Once every dot has landed
   // (progress 1) the picture is still, and the canvas keeps showing the last frame for free.
-  const drifting = !still.matches && dotsMat.uniforms.progress.value < 1
+  const drifting = !still.matches && (dotsMat.uniforms.progress.value < 1 || dotsMat.uniforms.morph.value > 0) // the server's lights blink
   if (!dirty && !drifting) return
   dirty = false
   if (!still.matches) dotsMat.uniforms.time.value = ms / 1000 // the cloud's drift
@@ -416,3 +556,42 @@ renderer.setAnimationLoop((ms) => {
   thumbOnly.value = 0
   camera.layers.set(0)
 })
+
+// ---------------------------------------------------------------------------------------------------
+// The server's shape. The sampler returns one random dot on the server's camera-facing faces (front, top,
+// left), in metres centred on the server: { p, n, led }. led > 0 marks a blinking status light (its phase).
+// Patterns are cut by rejection: a dot that lands in a gap or vent hole is thrown away and re-rolled.
+function boxSampler(W, H, D, front, cy) {
+  const faces = [
+    [W * H, () => [[(Math.random() - 0.5) * W, (Math.random() - 0.5) * H, D / 2], [0, 0, 1]], front],
+    [W * D, () => [[(Math.random() - 0.5) * W, H / 2, (Math.random() - 0.5) * D], [0, 1, 0]], () => true],
+    [D * H, () => [[-W / 2, (Math.random() - 0.5) * H, (Math.random() - 0.5) * D], [-1, 0, 0]], () => true],
+  ]
+  const total = faces.reduce((s, f) => s + f[0], 0)
+  return () => {
+    for (;;) {
+      let r = Math.random() * total, f = faces[0]
+      for (const face of faces) { if ((r -= face[0]) < 0) { f = face; break } }
+      const [p, n] = f[1]()
+      const led = f[2](p[0], p[1], p[2])
+      if (led === false) continue
+      p[1] += cy
+      return { p, n, led: led === true ? 0 : led }
+    }
+  }
+}
+const near = (x, y, cx, cy, r) => (x - cx) ** 2 + (y - cy) ** 2 < r * r
+
+// The server glyph everyone knows — three fat slabs stacked with gaps, lights left, slots right.
+function serverSampler() {
+  const W = 0.14, h = 0.038, D = 0.1, gap = 0.016
+  const slabs = [0, 1, 2].map((i) => {
+    const cy = (i - 1) * (h + gap)
+    return boxSampler(W, h, D, (x, y) => {
+      for (let j = 0; j < 3; j++) if (near(x, y, -W / 2 + 0.016 + j * 0.013, 0, 0.0045)) return ((i * 3 + j) * 0.21) % 1 + 0.001
+      if (x > 0 && x < W / 2 - 0.012 && [-0.01, 0, 0.01].some((ly) => Math.abs(y - ly) < 0.0022)) return false // slots
+      return true
+    }, cy)
+  })
+  return () => slabs[Math.floor(Math.random() * 3)]()
+}

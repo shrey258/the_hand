@@ -1,19 +1,18 @@
 # Handoff — the_hand (2026-09-27, OTA session)
 
-**Next session: promote the OTA broadcast from `proto/ota/` into `src/main.js`, then design the phone screen.** Everything below was checked this session unless marked *unverified*.
+**Next session: design the phone screen (the update card is a placeholder), then ship `ota-broadcast`.** Everything below was checked this session unless marked *unverified*.
 
 ## Where it stands
 - Live: https://thehand-iota.vercel.app (Vercel team **shrey258s-projects**, never `not-a-number-labs`). `thehand.vercel.app` is someone else's.
 - `main` = `production` = `8a7e39c` (the hand + phone, no OTA). Vercel only deploys `production`; `main` builds previews.
-- **Branch `ota-broadcast`** holds this session's work: the prototype in `proto/ota/` and this file. Production code (`src/`) is untouched.
+- **Branch `ota-broadcast`** (pushed) holds this session's work: the OTA stages are in `src/main.js`. The prototype and its picker are deleted. Not merged to `main`, not live.
 - **Go live:** `git switch production && git merge main && git push`. Never `vercel deploy --prod`.
-- **Dev:** `npm run dev`, then open **`/proto/ota/`**. `vite build` only builds the root `index.html`, so the proto never ships.
-  - The proto's DialKit saves under its own id (`ota-proto`). Hit **Reset** in the panel if the browser shows old values.
+- **Dev:** `npm run dev` shows the DialKit panel. Production hides it and uses the code defaults. Hit **Reset** if the browser shows old saved values.
 
-## The OTA story (what `proto/ota/` does)
+## The OTA story (on `ota-broadcast`)
 The goal: after the phone reaches the customer, the hand turns into our OTA server, which pushes an update to the phone.
 
-`proto/ota/main.js` is a copy of `src/main.js` plus the OTA stages. The scroll is now pinned for 670% (`amount` 0 → 3.35, `:458`):
+Line numbers are `src/main.js` on `ota-broadcast`. The scroll is now pinned for 670% (`amount` 0 → 3.35, `:434`):
 
 | Scroll `amount` | Stage | DialKit value |
 |---|---|---|
@@ -22,13 +21,13 @@ The goal: after the phone reaches the customer, the hand turns into our OTA serv
 | 1.25 – 2.25 | Hand → cloud → server | `ota.morph` |
 | 2.35 – 3.35 | Server broadcasts to the phone | `ota.push` |
 
-- **Server shape** (`icon()`, `:620`): the classic server glyph, three stacked slabs with lights and slots. Only the faces the camera sees are sampled (front, top, left), so the server's dots skip the depth test.
-- **Morph** (`:84`): the dots dissolve back into the opening cloud, then condense into the server (style 1).
-- **Broadcast** (`:115`): the server's spare dots (the 80% its `keep` test hides) become Wi-Fi arcs.
+- **Server shape** (`serverSampler()`, `:586`): the classic server glyph, three stacked slabs with lights and slots. Only the faces the camera sees are sampled (front, top, left), so the server's dots skip the depth test.
+- **Morph** (`:83`): the dots dissolve back into the opening cloud, then condense into the server.
+- **Broadcast** (`:92–120`): the server's spare dots (the 80% its `keep` test hides) become Wi-Fi arcs.
   - Waves are **scroll-driven**: scrolling down sends them one at a time, scrolling up pulls them back.
   - Each wave eases out, starts thick and thins as it spreads, and fades into the phone's right edge.
   - They go quiet at 85–95% of the push, when the card switches to "Updated".
-- **Phone screen** (`drawScreen`, `:311`): an "Updating to v2.4…" card with a progress bar that follows the push, then "Updated to v2.4 / Over the air, just now". **Placeholder**: the phone design is his to do later.
+- **Phone screen** (`drawScreen`, `:287`): an "Updating to v2.4…" card with a progress bar that follows the push, then "Updated to v2.4 / Over the air, just now". **Placeholder**: the phone design is his to do later.
 - **Knobs:** DialKit → Ota: server `x/y/z/scale/yaw`, `ink`, `keep`, and `waves` → `trips/count/spread/weight`.
 
 ## Decisions (from the picker rounds)
@@ -37,15 +36,13 @@ The goal: after the phone reaches the customer, the hand turns into our OTA serv
 - **Link to the phone: Broadcast.** It "serves the idea better" than the others.
   - Rejected: **Cable** (a wire contradicts "over the air"). **Pour** (dots stream into the screen; busiest, and it hides the phone's top edge).
 - **Waves follow the scroll, not a clock.** Time-driven waves were tried and rejected: he likes that scrolling up "takes back the waves".
-- **Waves need energy.** The first version had gaps in the arcs; the cause was correlated `fract(u * constant)` hashes. Fixed with `rnd()` (`:67`), a sin hash. Never derive several random values from one number by multiplying it by constants.
+- **Waves need energy.** The first version had gaps in the arcs; the cause was correlated `fract(u * constant)` hashes. Fixed with `rnd()` (`:66`), a sin hash. Never derive several random values from one number by multiplying it by constants.
 
-## To promote (next session)
-1. Copy the OTA pieces from `proto/ota/main.js` into `src/main.js`: the `ota` DialKit group, the shader's morph + link blocks, `icon()`/`boxSampler()`, `buildServer`, `drawScreen`, and the longer scroll.
-2. Drop the Cable and Pour branches and `linkStyle`. Drop the Rack/Assembly morph styles (`style` 0 and 2) and `mTravel`.
-3. Drop the proto-only bits: the picker (`index.html`, `picker.css`, the `// Picker` block at `:634`) and `window.kit` (`:303`).
-4. Delete `proto/`.
-5. **Fix before shipping:** once `morph > 0` the render loop draws every frame (`:577`) because the server lights blink on a clock. That loses the idle-GPU win. Options: stop the blink, or only redraw while the pinned section is on screen.
-6. Reduced motion: the lights freeze and the waves still scrub with the scroll. *Unverified* whether that's acceptable.
+## Before shipping `ota-broadcast`
+1. **Design the phone screen.** `drawScreen` is a placeholder card (`ponytail:` comment).
+2. **The render loop never idles once the server exists** (`:544`): the server's lights blink on a clock, so every frame redraws. That loses the idle-GPU win. Options: stop the blink, or only redraw while the pinned section is on screen.
+3. Reduced motion: the lights freeze and the waves still scrub with the scroll. *Unverified* whether that's acceptable.
+4. Ship: merge `ota-broadcast` into `main`, then `production` (see "Go live").
 
 ## Posting (in progress)
 - The video was recorded: a 14s loop down and back up, 1:1, exported at 1080p max quality in Cursorful. *Unverified* whether it's been posted.
@@ -77,20 +74,20 @@ Walkthrough (`src/main.js`, line numbers as of `8a7e39c`):
 - [ ] Easing (~171): why the grip is ease-in-out but the phone is ease-out.
 - [ ] Render loop (400–418): the `dirty` flag and the reduced-motion check.
 
-**New this session (`proto/ota/main.js`), unread:**
-- [ ] The wave maths (`:115`): how `push * trips - ring / count` + `fract` makes waves leave one at a time and reverse on scroll-up.
+**New this session (`src/main.js` on `ota-broadcast`), unread:**
+- [ ] The wave maths (`:100–120`): how `push * trips - ring / count` + `fract` makes waves leave one at a time and reverse on scroll-up.
 - [ ] Why the server's dots can skip the depth test (only camera-facing faces are sampled).
-- [ ] Pairing dots to server spots by rank (`buildServer`, `:538`), and why the couriers are "spare" dots.
+- [ ] Giving each dot a server spot (`:512`), and why the couriers are "spare" dots.
 
 ## Known loose ends
 - The phone's shadow on the hand is gone (shadows removed for perf).
 - The knuckles may tear when bent hard: each dot copies its nearest corner's bone weights (`ponytail:` comment).
 - The skinned points rely on three.js internals (`isSkinnedMesh` flag). Recheck after upgrading three.
-- Portrait phones: the hand sits right of the centred phone and may be cut off. *Unverified.* The server sits further right still, so this is worse in the proto.
+- Portrait phones: the hand sits right of the centred phone and may be cut off. *Unverified.* The server sits further right still, so this is worse now.
 - The fingers pass through the phone in 3D; the occlusion is a render trick that only works from this fixed camera.
 - Once the hand becomes the server, the phone floats on its own. Intended for now.
 
 ## Suggested skills
-- `own-the-decision`: first. Get his goal for the promote step and a time guess.
-- `emil-performance`: for step 5 of the promote list (the always-on render loop).
+- `own-the-decision`: first. Get his goal for the phone screen and a time guess.
+- `emil-performance`: for step 2 of "Before shipping" (the always-on render loop).
 - `emil-prototype`: for the phone screen, if he's undecided what it should show.
