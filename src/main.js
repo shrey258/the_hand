@@ -50,7 +50,7 @@ const dotsMat = new THREE.ShaderMaterial({
     progress: { value: 0 }, travel: { value: 0.4 }, time: { value: 0 }, size: { value: 2 },
     cloudSize: { value: 0.3 }, gather: { value: 0.6 }, cloudInk: { value: 0.3 }, shade: { value: 0.7 }, color: { value: new THREE.Color() },
     lightDir: { value: key.position }, thumbOnly,
-    morph: { value: 0 }, serverAt: { value: new THREE.Vector3() }, serverScale: { value: 1 }, serverYaw: { value: 0 }, serverInk: { value: 0.5 }, serverKeep: { value: 0.4 }, push: { value: 0 }, waveSpeed: { value: 2 }, waveCount: { value: 3 }, waveSpread: { value: 1.4 }, waveInk: { value: 0.6 }, phoneAt: { value: new THREE.Vector3() },
+    morph: { value: 0 }, blink: { value: 0 }, serverAt: { value: new THREE.Vector3() }, serverScale: { value: 1 }, serverYaw: { value: 0 }, serverInk: { value: 0.5 }, serverKeep: { value: 0.4 }, push: { value: 0 }, waveSpeed: { value: 2 }, waveCount: { value: 3 }, waveSpread: { value: 1.4 }, waveInk: { value: 0.6 }, phoneAt: { value: new THREE.Vector3() },
   },
   vertexShader: `
     #include <common>
@@ -135,7 +135,7 @@ const dotsMat = new THREE.ShaderMaterial({
       vK = k;
     }`,
   fragmentShader: `
-    uniform float shade, thumbOnly, cloudInk, time;
+    uniform float shade, thumbOnly, cloudInk, blink;
     uniform vec3 color;
     varying float vLit, vSeed, vThumb, vK, vM, vInk, vLed, vKeep, vLink, vCourierRnd;
     void main() {
@@ -148,7 +148,7 @@ const dotsMat = new THREE.ShaderMaterial({
         return;
       }
       if (vLed > 0.0) { // status LEDs: solid, blinking at their own phase
-        if (fract(time * 0.7 + vLed) > 0.55) discard;
+        if (fract(blink * 0.7 + vLed) > 0.55) discard;
         gl_FragColor = vec4(color, 1.0);
         #include <colorspace_fragment>
         return;
@@ -541,10 +541,19 @@ const still = matchMedia('(prefers-reduced-motion: reduce)')
 renderer.setAnimationLoop((ms) => {
   // Draw only when something changed or the cloud is still drifting. Once every dot has landed
   // (progress 1) the picture is still, and the canvas keeps showing the last frame for free.
-  const drifting = !still.matches && (dotsMat.uniforms.progress.value < 1 || dotsMat.uniforms.morph.value > 0) // the server's lights blink
-  if (!dirty && !drifting) return
+  // The morph also drifts through the cloud, so it counts until the server has formed (morph 1).
+  // After that only the server's lights change. They tick at 8 fps, so an idle page draws 8 frames a
+  // second instead of 120.
+  const u = dotsMat.uniforms
+  const drifting = !still.matches && (u.progress.value < 1 || (u.morph.value > 0 && u.morph.value < 1))
+  const tick = Math.floor(ms / 125) / 8
+  const blinking = !still.matches && u.morph.value > 0 && tick !== u.blink.value
+  if (!dirty && !drifting && !blinking) return
   dirty = false
-  if (!still.matches) dotsMat.uniforms.time.value = ms / 1000 // the cloud's drift
+  if (!still.matches) {
+    u.time.value = ms / 1000 // the cloud's drift
+    u.blink.value = tick
+  }
   renderer.clear()
   renderer.render(scene, camera)
   renderer.clearDepth()

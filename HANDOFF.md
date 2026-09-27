@@ -40,7 +40,7 @@ Line numbers are `src/main.js` on `ota-broadcast`. The scroll is now pinned for 
 
 ## Before shipping `ota-broadcast`
 1. **Design the phone screen.** `drawScreen` is a placeholder card (`ponytail:` comment).
-2. **The render loop never idles once the server exists** (`:544`): the server's lights blink on a clock, so every frame redraws. That loses the idle-GPU win. Options: stop the blink, or only redraw while the pinned section is on screen.
+2. ~~Render loop never idles~~ **Done:** the server's lights tick at 8 fps, so a resting page draws ~8 frames/s instead of 120 (measured). Full frame rate only while scrolling, the cloud drifting, or the morph running.
 3. Reduced motion: the lights freeze and the waves still scrub with the scroll. *Unverified* whether that's acceptable.
 4. Ship: merge `ota-broadcast` into `main`, then `production` (see "Go live").
 
@@ -89,5 +89,4 @@ Walkthrough (`src/main.js`, line numbers as of `8a7e39c`):
 
 ## Suggested skills
 - `own-the-decision`: first. Get his goal for the phone screen and a time guess.
-- `emil-performance`: for step 2 of "Before shipping" (the always-on render loop).
 - `emil-prototype`: for the phone screen, if he's undecided what it should show.
