@@ -1,92 +1,86 @@
-# Handoff — the_hand (2026-09-27, OTA session)
+# Handoff — the_hand (2026-09-27, phone-screen session)
 
-**Next session: design the phone screen (the update card is a placeholder), then ship `ota-broadcast`.** Everything below was checked this session unless marked *unverified*.
+**Next session: pick between Frozen and Crash (Shatter is out), then promote the feed story from `proto/feed/` into `src/main.js` and ship `ota-broadcast`.** Everything below was checked this session unless marked *unverified*.
 
 ## Where it stands
 - Live: https://thehand-iota.vercel.app (Vercel team **shrey258s-projects**, never `not-a-number-labs`). `thehand.vercel.app` is someone else's.
 - `main` = `production` = `8a7e39c` (the hand + phone, no OTA). Vercel only deploys `production`; `main` builds previews.
-- **Branch `ota-broadcast`** (pushed) holds this session's work: the OTA stages are in `src/main.js`. The prototype and its picker are deleted. Not merged to `main`, not live.
+- **Branch `ota-broadcast`**: OTA stages committed (`e0ec18a`, `1007d2c`). **Uncommitted:** the page caption (`index.html`, `src/style.css`, `src/main.js` `drawScreen`), this file, and the whole `proto/feed/` directory.
 - **Go live:** `git switch production && git merge main && git push`. Never `vercel deploy --prod`.
-- **Dev:** `npm run dev` shows the DialKit panel. Production hides it and uses the code defaults. Hit **Reset** if the browser shows old saved values.
+- **Dev:** `npm run dev` shows the DialKit panel. Production hides it. Hit **Reset** if the browser shows old saved values (new dials were added this session).
 
-## The OTA story (on `ota-broadcast`)
-The goal: after the phone reaches the customer, the hand turns into our OTA server, which pushes an update to the phone.
+## The feed story (prototype: `proto/feed/`, open `/proto/feed/` on the dev server)
+Goal: the hand is the user. They scroll a feed with their thumb, a bug hits, the hand becomes the OTA server and beams a fix, then turns back into the hand, and the user scrolls again.
 
-Line numbers are `src/main.js` on `ota-broadcast`. The scroll is now pinned for 670% (`amount` 0 → 3.35, `:434`):
+- `proto/feed/main.js` is a copy of `src/main.js` plus the feed. `proto/feed/screen.js` draws the phone screen. Nothing in `src/` imports them; `vite build` ignores them.
+- **Timeline** (`proto/feed/main.js:457`, pinned `T * 200%` = 1400%): grip 0–1 · scroll 1–2.2 · bug 2.2–2.5 · morph 2.6–3.6 · push 3.7–4.7 · server → hand 4.8–5.8 (`ota.back`, plays the morph in reverse) · scroll again 5.8–7.
+- **Thumb swipe** (`:261`): the thumb moves onto the screen, then does 3 flicks per scroll stage. The design came from the research below. Dials are in DialKit → Feed:
+  - `from`/`to`: the angle range, set by him. Bigger = lower on the screen.
+  - `peak`, `curl`, `lag`, `bend`, `distance`, `drag`.
+  - Each flick is a cosine bump with zero speed at both ends. The thumb lets go halfway up, at its fastest.
+  - The feed follows the thumb while touching, then coasts with an exponential decay. τ is solved by bisection so the speed at release matches. Verified numerically: 3.142 before vs 3.141 after release, and each flick ends exactly `distance` posts on.
+  - The joints share the swing: CMC 75%, MCP 25% a little later, and the IP joint flexes more when the thumb is low.
+  - All bends are around the view axis (the only one verified to look right from this camera).
+- **Paper-white thumb** (`:595`): in the thumb pass the depth hand also writes white, so the screen doesn't show through the sparse lit dots. That was the cause of his "flicker". It's on only while the dots sit on the hand (`progress ≥ 1 && morph ≤ 0`). *Unverified:* whether the fill switching off at morph start / on at the end of the return is noticeable.
+- **Screen** (`screen.js`): a white "Feed" app, 16 posts, long names truncated with "…". A shared "Updated to v2.4" pill shows at the end of the push and fades as the hand returns. The caption fades out as the hand returns.
+- **Picker**: the verbatim emil-prototype pill; keys `1`–`3`/`←→`, `?v=N`. `window.kit = kit` is exposed for poking values (proto only).
 
-| Scroll `amount` | Stage | DialKit value |
-|---|---|---|
-| 0 – 1 | Grip, as before | `grip.amount` |
-| 1 – 1.25 | Hold on the lit screen | — |
-| 1.25 – 2.25 | Hand → cloud → server | `ota.morph` |
-| 2.35 – 3.35 | Server broadcasts to the phone | `ota.push` |
+## Decisions
+- **Bug look: keep Frozen and Crash, drop Shatter** (his words: "keep both frozen and crash for now"). Not yet decided between the two.
+  - **Frozen** (`screen.js:128`): scrim, a 12-spoke spinner that turns with the scroll, "Feed isn't responding"; it clears as the push ends.
+  - **Crash** (`:151`): the app shrinks to the home screen and an alert says "Feed quit unexpectedly". It becomes "Installing a fix…" with a progress bar, then the app reopens. It repeats the "Updated" pill; drop one of the two if Crash wins.
+  - Rejected: **Shatter** (`:86`): tear, then dots scatter on black, and the waves pull them home.
+- **Page scroll drives the feed, and the thumb must visibly swipe**: a thumb sitting still while the feed moves "doesn't make sense".
+- **The hand comes back after the broadcast**, and the user scrolls again. Keep a brief "Updated" pill; the old "Updating to v2.4…" card is gone.
+- **The caption has to move** (his words). Done so far: it fades out on the return. *Unverified* whether that's what he meant by "move".
+- Earlier (still standing): server shape "Through the cloud", link "Broadcast", "no store" message = page caption, waves follow the scroll, `rnd()` sin hash. See git history `d533239`, `e0ec18a` for the rejected options.
 
-- **Server shape** (`serverSampler()`, `:586`): the classic server glyph, three stacked slabs with lights and slots. Only the faces the camera sees are sampled (front, top, left), so the server's dots skip the depth test.
-- **Morph** (`:83`): the dots dissolve back into the opening cloud, then condense into the server.
-- **Broadcast** (`:92–120`): the server's spare dots (the 80% its `keep` test hides) become Wi-Fi arcs.
-  - Waves are **scroll-driven**: scrolling down sends them one at a time, scrolling up pulls them back.
-  - Each wave eases out, starts thick and thins as it spreads, and fades into the phone's right edge.
-  - They go quiet at 85–95% of the push, when the card switches to "Updated".
-- **Phone screen** (`drawScreen`, `:287`): an "Updating to v2.4…" card with a progress bar that follows the push, then "Updated to v2.4 / Over the air, just now". **Placeholder**: the phone design is his to do later.
-- **Knobs:** DialKit → Ota: server `x/y/z/scale/yaw`, `ink`, `keep`, and `waves` → `trips/count/spread/weight`.
+## To promote the winner (emil-prototype Phase 7)
+1. Write the decision (the winner + the rejected variants) into this file.
+2. Port the feed code into `src/`: the `feed` dials, the thumb block, the `pose` MCP/IP swings, the timeline, the white thumb pass, `screen.js` minus the losing variants, and the extra caption fade. Drop `window.kit` and the picker.
+3. Delete `proto/feed/`, then grep for `proto` and `picker` to confirm nothing is left.
+4. Then the existing ship list: reduced motion is *unverified* (the lights freeze; the waves and thumb still scrub), and so are portrait phones (under 700px the caption moves above the phone). Merge to `main`, then `production`.
 
-## Decisions (from the picker rounds)
-- **Server shape + morph: "Through the cloud"** (icon slabs, via the cloud).
-  - Rejected: **Rack** (a straight morph into a 19" cabinet; reads instantly but looks like stock art). **Assembly line** (fingertips peel off and build a tower bottom-up; busy, and a blob mid-way).
-- **Link to the phone: Broadcast.** It "serves the idea better" than the others.
-  - Rejected: **Cable** (a wire contradicts "over the air"). **Pour** (dots stream into the screen; busiest, and it hides the phone's top edge).
-- **Waves follow the scroll, not a clock.** Time-driven waves were tried and rejected: he likes that scrolling up "takes back the waves".
-- **Waves need energy.** The first version had gaps in the arcs; the cause was correlated `fract(u * constant)` hashes. Fixed with `rnd()` (`:66`), a sin hash. Never derive several random values from one number by multiplying it by constants.
+## Running things (die with this machine; restart as needed)
+- A dev server on port 5199 (`npx vite --port 5199`) and a cloudflared quick tunnel (`cloudflared tunnel --url http://localhost:5199 --http-host-header localhost:5199`). The URL changes on every restart. He shared one to ask for opinions.
+- A debug Chrome on CDP port 9222 (profile in `/private/tmp/claude-501/chrome-proto`). Screenshot helpers are in `/private/tmp/claude-501/`: `shot.mjs <v> <amount…>`, `poke.mjs`, `flick.sh`, `strip.sh`. Temp dir: *unverified* whether they survive.
 
-## Before shipping `ota-broadcast`
-1. **Design the phone screen.** `drawScreen` is a placeholder card (`ponytail:` comment).
-2. ~~Render loop never idles~~ **Done:** the server's lights tick at 8 fps, so a resting page draws ~8 frames/s instead of 120 (measured). Full frame rate only while scrolling, the cloud drifting, or the morph running.
-3. Reduced motion: the lights freeze and the waves still scrub with the scroll. *Unverified* whether that's acceptable.
-4. Ship: merge `ota-broadcast` into `main`, then `production` (see "Go live").
-
-## Posting (in progress)
-- The video was recorded: a 14s loop down and back up, 1:1, exported at 1080p max quality in Cursorful. *Unverified* whether it's been posted.
-- Caption direction: an Endgame re-release tie-in, e.g. "For the Endgame re-release, I made the snap in reverse". *Unverified:* re-release timing.
-- **Credit:** "iPhone 16 by Wes, sketchfab.com/wimell". He has no X account linked or findable, so don't guess a handle.
-- Thread plan: reply 1 = what it is + link, reply 2 = fingertip story, reply 3 = DialKit shoutout (**verify Josh Puckett's X handle before tagging**).
-- **Not done:** `og:`/`twitter:` meta tags and a preview image, so an X link shows as a bare URL. Offered; he hasn't decided.
+## Posting (in progress, unchanged)
+- Video recorded (14s loop, 1:1, 1080p, Cursorful). *Unverified* whether it's posted.
+- Credit: "iPhone 16 by Wes, sketchfab.com/wimell". No X handle; don't guess one.
+- Thread plan: reply 1 = what + link, 2 = fingertip story, 3 = DialKit shoutout (**verify Josh Puckett's X handle first**).
+- Not done: `og:`/`twitter:` meta and a preview image.
 
 ## Learning tracker
-Goal: be able to rebuild this without AI. Docs are allowed; AI only for hints (where to look → the idea → one line max, never full code). State a time guess before each step. At session start, remind him what's unchecked here before building.
+Goal: be able to rebuild this without AI. Docs are allowed; AI only for hints (where to look → the idea → one line max, never full code). State a time guess before each step. At session start, remind him what's unchecked. **Time guess this session: 30 min; actual: much longer** (the thumb alone took several rounds).
 
-Walkthrough (`src/main.js`, line numbers as of `8a7e39c`):
-- [x] Renderer, camera, noise texture (since deleted), `apply()`. **Lights still not understood — revisit** (key = sun, one direction, gives shape; fill = sky/ground, stops the dark side going black).
+Walkthrough (`src/main.js`):
+- [x] Renderer, camera, `apply()`. **Lights: revisit** (key = one direction for shape; fill stops the dark side going black).
 - [ ] Standing the hand up (basis from up/across/normal).
-- [ ] `swing()` + `pose()`. Open questions:
-  1. Why `sub(pivot)` → rotate → `add(pivot)`?
-  2. Why does each bone need both a position and a quaternion change?
+- [ ] `swing()` + `pose()`: why `sub(pivot)` → rotate → `add(pivot)`; why each bone needs a position and a quaternion change.
 - [ ] `subdivide.js` (check: `node src/subdivide.test.js`).
-- [ ] The thumb pass: why it works (after pass 2 the depth buffer holds only the phone).
-
-**Unread since the GSAP change. He asked to be told to read these.**
-- [ ] Scroll (310–320): `gsap.to` on a plain object + `onUpdate` → `kit.setValue`. How many px from 0 to 1 on a 700px window? What breaks without `pin: true`?
-- [ ] Invisible hand (32): `colorWrite: false` + `polygonOffset`. Why does the hand still need to exist?
-- [ ] Dot shader (48–97): `mix(drift, home, k)`, the two-stage `gather`/`land`, the near-plane trick and its 5 mm cutoff, the dither `discard`.
-- [ ] Dot uniforms (~180): why the size is rounded to whole device pixels.
-- [ ] Sampling (323–358): cumulative triangle areas + binary search. Why fold `u + v > 1`?
-- [ ] Thumb split + skinned points (359–388): `isSkinnedMesh`, layer 2, why `mesh.add(pts)`.
-- [ ] Phone centring (155–160): `setViewOffset` vs moving the camera.
-- [ ] Easing (~171): why the grip is ease-in-out but the phone is ease-out.
-- [ ] Render loop (400–418): the `dirty` flag and the reduced-motion check.
-
-**New this session (`src/main.js` on `ota-broadcast`), unread:**
-- [ ] The wave maths (`:100–120`): how `push * trips - ring / count` + `fract` makes waves leave one at a time and reverse on scroll-up.
-- [ ] Why the server's dots can skip the depth test (only camera-facing faces are sampled).
-- [ ] Giving each dot a server spot (`:512`), and why the couriers are "spare" dots.
+- [ ] The thumb pass (after pass 2 the depth buffer holds only the phone).
+- [ ] Scroll: `gsap.to` + `onUpdate` → `kit.setValue`; px per unit; what breaks without `pin`.
+- [ ] Invisible hand: `colorWrite: false` + `polygonOffset`. (This session turned `colorWrite` on for the thumb pass; see why above.)
+- [ ] Dot shader: `mix(drift, home, k)`, `gather`/`land`, the near-plane trick, the dither `discard`.
+- [ ] Dot size rounded to whole device pixels.
+- [ ] Sampling: cumulative triangle areas + binary search; why fold `u + v > 1`.
+- [ ] Thumb split + skinned points: `isSkinnedMesh`, layer 2, `mesh.add(pts)`.
+- [ ] Phone centring: `setViewOffset` vs moving the camera.
+- [ ] Easing: grip ease-in-out vs phone ease-out.
+- [ ] Render loop: `dirty` and reduced motion.
+- [ ] Wave maths: `push * trips - ring / count` + `fract`.
+- [ ] Why the server's dots skip the depth test; the server spots and the "spare" couriers.
+- [ ] **New:** the flick maths in `proto/feed/main.js:261`: why a cosine bump has zero speed at both ends, why releasing mid-rise makes a flick, and how bisection finds τ.
 
 ## Known loose ends
-- The phone's shadow on the hand is gone (shadows removed for perf).
-- The knuckles may tear when bent hard: each dot copies its nearest corner's bone weights (`ponytail:` comment).
-- The skinned points rely on three.js internals (`isSkinnedMesh` flag). Recheck after upgrading three.
-- Portrait phones: the hand sits right of the centred phone and may be cut off. *Unverified.* The server sits further right still, so this is worse now.
-- The fingers pass through the phone in 3D; the occlusion is a render trick that only works from this fixed camera.
-- Once the hand becomes the server, the phone floats on its own. Intended for now.
+- The knuckles may tear when bent hard (`ponytail:` comment); the skinned points rely on three internals (`isSkinnedMesh`).
+- Portrait phones: the hand and server may be cut off. *Unverified.*
+- The fingers pass through the phone in 3D; the occlusion only works from this fixed camera.
+- Research used for the thumb: https://arxiv.org/pdf/2102.07459 (minimum jerk), https://pmc.ncbi.nlm.nih.gov/articles/PMC12649530/ and https://www.sciencedirect.com/science/article/am/pii/S0003687016301156 (thumb joint angles while swiping).
 
 ## Suggested skills
-- `own-the-decision`: first. Get his goal for the phone screen and a time guess.
-- `emil-prototype`: for the phone screen, if he's undecided what it should show.
+- `own-the-decision`: first. Frozen vs Crash is his call; get a time guess.
+- `emil-prototype`: `keep <variant>` to write the decision, promote it and delete the harness.
+- `emil-animations`: when porting, keep the minimum-jerk, zero-speed-at-both-ends rule for any new motion.
+- `ponytail:ponytail`: keep the port small; don't carry the picker or the losing variants into `src/`.

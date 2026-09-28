@@ -1,17 +1,20 @@
-import './style.css'
+import '../../src/style.css'
 import 'dialkit/vanilla/styles.css'
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { gsap } from 'gsap'
 import { ScrollTrigger } from 'gsap/ScrollTrigger'
 import { createDialKit, createDialRoot } from 'dialkit/vanilla'
-import { subdivide } from './subdivide.js'
+import { subdivide } from '../../src/subdivide.js'
+import { drawScreen as paint, W as SW, H as SH } from './screen.js'
 
 const renderer = new THREE.WebGLRenderer({ antialias: true })
 // Capped at 1.5: at 2× a Retina screen draws 4.1M pixels a frame for a 1280×800 window, at 1.5× 2.3M.
 renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5))
 renderer.setSize(innerWidth, innerHeight)
 document.querySelector('#app').appendChild(renderer.domElement)
+renderer.domElement.setAttribute('role', 'img')
+renderer.domElement.setAttribute('aria-label', 'A hand made of dots scrolls a feed on a phone. The feed freezes, the hand turns into a server, and the fix arrives over the air.')
 
 const scene = new THREE.Scene()
 renderer.setClearColor('#ffffff') // not scene.background: that would repaint over the hand in the phone pass
@@ -160,47 +163,43 @@ const dotsMat = new THREE.ShaderMaterial({
     }`,
 })
 
+// Settled values, out of the panel. Angles are degrees.
+const fixed = {
+  camera: { distance: 0.5, height: 0, fov: 35 },
+  light: { azimuth: 45, elevation: 45, intensity: 3.5, fill: 0.35 },
+  // Around the palm normal; positive swings toward the pinky side.
+  spread: { thumb: -14, index: -5, middle: 0, ring: 3, pinky: 8 },
+  // What each joint reaches at grip amount 1. Middle and fingertip joints are per finger, so each tip lands on the phone's edge.
+  // squeeze: how much the gaps between fingers close (0 = open fan, 1 = parallel, >1 = tips lean in), easing in from squeezeFrom.
+  grip: {
+    roll: 85, proximal: 35,
+    intermediate: { index: 10, middle: 35, ring: 29, pinky: 10 },
+    distal: { index: 49, middle: 20, ring: 21, pinky: 22 },
+    squeeze: 1.3, squeezeFrom: 0.85,
+  },
+  dots: { color: '#000000', size: 1, cloud: 1, cloudInk: 0.3, travel: 0.87, gather: 0.98, shade: 1 },
+  // Phone sits in world space, placed for the end state (grip amount 1). Position in metres.
+  // drop: how far above its resting spot it starts (0.3 clears the top of the frame). land: grip amount at which
+  // it lands, so it arrives before the fingers close. screenOn: the screen lights up over this last stretch.
+  phone: { x: -0.106, y: -0.049, z: 0.027, drop: 0.3, land: 0.8, screenOn: 0.92 },
+}
+
 // Every tweakable number lives here. Sliders are [default, min, max, step].
 // "Copy" in the panel's version menu gives you the values to paste back as new defaults.
 createDialRoot({ position: 'top-right', productionEnabled: import.meta.env.DEV }) // panel only in dev (false hides it everywhere)
 const kit = createDialKit('Hand', {
   reset: { type: 'action' },
-  camera: { distance: [0.5, 0.2, 1.5, 0.01], height: [0, -0.15, 0.15, 0.005], fov: [35, 15, 70, 1] },
-  light: {
-    azimuth: [45, -180, 180, 1],
-    elevation: [45, -90, 90, 1],
-    intensity: [3.5, 0, 10, 0.1],
-    fill: [0.35, 0, 2, 0.01],
-  },
-  skin: { smoothness: [2, 0, 3, 1] }, // subdivision of the invisible depth hand; dots are sampled from it at load
-  // Degrees around the palm normal; positive swings toward the pinky side.
-  spread: { thumb: [-14, -60, 30, 1], index: [-5, -30, 30, 1], middle: [0, -30, 30, 1], ring: [3, -30, 30, 1], pinky: [8, -30, 40, 1] },
   // Grip = the "about to hold a phone" pose. Amount 0 is open, 1 is fully closed; scrolling sets it.
-  // Angles are what each joint reaches at amount 1.
-  grip: {
-    amount: [0, 0, 1, 0.01],
-    roll: [85, 0, 120, 1],
-    proximal: [35, 0, 110, 1],
-    // Middle and fingertip joints, per finger, so each tip can land on the phone's edge.
-    intermediate: { index: [10, 0, 120, 1], middle: [35, 0, 120, 1], ring: [29, 0, 120, 1], pinky: [10, 0, 120, 1] },
-    distal: { index: [49, 0, 90, 1], middle: [20, 0, 90, 1], ring: [21, 0, 90, 1], pinky: [22, 0, 90, 1] },
-    // How much the gaps between fingers close by amount 1: 0 = keep the open fan, 1 = parallel to the
-    // middle finger, >1 = tips lean in. Fingers keep their fan until `squeezeFrom`, then ease together.
-    squeeze: [1.3, 0, 1.3, 0.01],
-    squeezeFrom: [0.85, 0, 1, 0.01],
-  },
-  dots: { count: [250000, 10000, 500000, 10000], color: '#000000', size: [1, 0.5, 4, 0.5], cloud: [1, 0.05, 1, 0.01], cloudInk: [0.3, 0, 1, 0.01], travel: [0.87, 0.05, 1, 0.01], gather: [0.98, 0, 1, 0.01], shade: [1, 0, 1, 0.01] },
-  // Phone sits in world space, placed for the end state (grip amount 1). Position in metres.
-  phone: {
-    x: [-0.106, -0.15, 0.15, 0.001], y: [-0.049, -0.15, 0.15, 0.001], z: [0.027, -0.1, 0.15, 0.001],
-    // How far above its resting spot the phone starts at grip 0; scrolling brings it down.
-    // 0.3 clears the top of the frame at the default camera.
-    drop: [0.3, 0, 0.5, 0.005],
-    // Scroll progress at which the phone lands, so it arrives first and the fingers close on it after.
-    land: [0.8, 0.3, 1, 0.01],
-    // The screen lights up over this last stretch of the scroll: the payoff once the grip is done.
-    screenOn: [0.92, 0.5, 1, 0.01],
-  },
+  grip: { amount: [0, 0, 1, 0.01] },
+  // The feed on the phone. scroll: flicks progress, 0–1, before the bug.
+  feed: { scroll: [0, 0, 1, 0.01], bug: [0, 0, 1, 0.01], flicks: [3, 1, 6, 1], // The thumb's angle while scrolling, in degrees (bigger = lower on the screen): each flick drags from → to.
+    from: [41, -30, 90, 1], to: [19, -30, 90, 1],
+    peak: [0.45, 0.2, 0.8, 0.01], // share of a flick spent rising to `to`; the thumb lets go halfway up
+    bend: [25, -60, 60, 1], // tip curl while the thumb is in the air, on its way back
+    curl: [20, -60, 60, 1], // tip joint flexes this much more when the thumb is low (studies: ~6° high, ~40° low)
+    lag: [0.05, 0, 0.2, 0.01], // how far the outer joints trail the base joint, as a share of a flick
+    // Momentum: posts moved per flick, and the share of that moved while the thumb touches the glass.
+    distance: [1.5, 0.5, 3, 0.05], drag: [0.3, 0.05, 0.9, 0.01] },
   // OTA: after the grip, scrolling on morphs the hand's dots into our update server, which then broadcasts to the phone.
   ota: {
     morph: [0, 0, 1, 0.01],
@@ -216,13 +215,13 @@ const kit = createDialKit('Hand', {
 const phone = new THREE.Group()
 scene.add(phone)
 
-let pose = () => {} // these two are replaced once the model has loaded
-let smooth = () => {}
-let dots = null // the dot cloud, built once the hand has loaded
+let pose = () => {} // replaced once the model has loaded
 let dirty = true // something changed since the last frame was drawn
 let glass = null // the phone's display, once loaded
+let screenState = { scroll: 0, bug: 0, fix: 0, spin: 0 }
 
 function apply(v) {
+  v = { ...v, ...fixed, grip: { ...v.grip, ...fixed.grip } } // fixed wins over any old saved panel values
   camera.position.set(0, v.camera.height, v.camera.distance)
   camera.fov = v.camera.fov
   camera.clearViewOffset()
@@ -243,8 +242,35 @@ function apply(v) {
   const easeOut = (x) => 1 - (1 - x) ** 3
   const easeInOut = (x) => (x < 0.5 ? 4 * x ** 3 : 1 - (-2 * x + 2) ** 3 / 2)
   const t = v.grip.amount
-  pose(v.spread, { ...v.grip, amount: easeInOut(t) })
-  smooth(v.skin.smoothness)
+  // Thumb swipe. Over feed.scroll: the thumb moves onto the screen (first 15%), then flicks.
+  // Every curve here has zero speed where it starts and stops, so nothing jerks (minimum-jerk motion).
+  const F = v.feed, P = F.peak
+  const seg = (x) => THREE.MathUtils.clamp((x - 0.15) / 0.85, 0, 1) * F.flicks
+  const sc = F.scroll, f = seg(sc)
+  // Height of the thumb through a flick, 0 (at `from`) → 1 (at `to`) → 0: a cosine bump that rises over
+  // `peak` of the flick and falls over the rest. Smooth at both ends, so flicks chain without a kink.
+  const bump = (q) => { const w = q < P ? 0.5 * q / P : 0.5 + 0.5 * (q - P) / (1 - P); return (1 - Math.cos(2 * Math.PI * w)) / 2 }
+  const h = (x) => (x <= 0 || x >= F.flicks ? 0 : bump(x - Math.floor(x)))
+  const on = THREE.MathUtils.smoothstep(sc, 0, 0.15)
+  const R = P / 2 // the thumb lets go halfway up, while it's moving fastest: that's what makes it a flick
+  // Joints share the swing and trail each other (overlapping action): the base (CMC) leads with 75%, the
+  // middle joint (MCP) follows with 25% a little later, and the tip joint (IP) flexes more when the thumb is
+  // low, later still. The tip also curls while in the air (sin², so it eases in and out).
+  const span = F.to - F.from
+  const thumb = THREE.MathUtils.lerp(v.spread.thumb, F.from, on) + 0.75 * span * h(f)
+  const mcp = 0.25 * span * h(f - F.lag)
+  const q = f - Math.floor(f), air = f > 0 && f < F.flicks && q > R ? Math.sin(Math.PI * (q - R) / (1 - R)) ** 2 : 0
+  const ip = on * F.curl * (1 - h(f - 2 * F.lag)) + F.bend * air
+  // Feed: stuck to the thumb while it touches, then it keeps the thumb's speed at release and slows like
+  // friction (exponential decay), coming to rest just as the next flick lands. τ is solved so the speed at
+  // release matches: no jump.
+  const K = 2 * F.drag * F.distance, v0 = (K * Math.PI) / (2 * P), C = (1 - F.drag) * F.distance, T = 1 - R
+  let lo = 1e-4, hi = 50 // τ·(1 − e^(−T/τ)) grows with τ; bisect for C / v0
+  for (let i = 0; i < 40; i++) { const m = (lo + hi) / 2; if (m * (1 - Math.exp(-T / m)) < C / v0) lo = m; else hi = m }
+  const tau = lo, coast = (t) => (C * (1 - Math.exp(-t / tau))) / (1 - Math.exp(-T / tau))
+  const feedAt = (x) => { if (x <= 0) return 0; if (x >= F.flicks) return F.flicks * F.distance; const k = Math.floor(x), r = x - k; return k * F.distance + (r < R ? K * bump(r) : K / 2 + coast(r - R)) }
+  const flicks = feedAt(f) // posts scrolled
+  pose({ ...v.spread, thumb }, { ...v.grip, amount: easeInOut(t), thumbMcp: mcp, thumbIp: ip })
 
   const u = dotsMat.uniforms
   u.progress.value = v.grip.amount
@@ -254,7 +280,6 @@ function apply(v) {
   u.cloudSize.value = v.dots.cloud
   u.shade.value = v.dots.shade
   u.cloudInk.value = v.dots.cloudInk
-  dots?.forEach((pts) => pts.geometry.setDrawRange(0, Math.round(v.dots.count * pts.share)))
   u.color.value.set(v.dots.color)
 
   // The phone slows into its resting spot and lands at `land`, before the fingers finish closing.
@@ -271,6 +296,7 @@ function apply(v) {
   u.waveSpread.value = THREE.MathUtils.degToRad(v.ota.waves.spread)
   u.waveInk.value = v.ota.waves.weight
   u.phoneAt.value.set(v.phone.x, v.phone.y, v.phone.z)
+  screenState = { scroll: flicks, bug: v.feed.bug, fix: v.ota.push, spin: v.feed.bug && (v.feed.bug + v.ota.morph + v.ota.push) * 9 } // 0 before the bug, so the dark screen isn't repainted through the grip
   if (glass) drawScreen(THREE.MathUtils.smoothstep(v.ota.push, 0.1, 0.95))
   if (glass) glass.material.emissiveIntensity = 0.85 * THREE.MathUtils.smoothstep(t, v.phone.screenOn, 1) // 0.85: a touch under full so it doesn't glow off the page
   dirty = true
@@ -279,49 +305,15 @@ kit.subscribe(apply)
 
 // Whatever is drawn on this canvas shows on the phone's screen.
 const screen = document.createElement('canvas')
-screen.width = 590
-screen.height = 1280
-let drawn = -1
-// The lock screen, plus an update card once the push starts. p = install progress 0–1.
+screen.width = SW
+screen.height = SH
+let drawn = ''
+// p = install progress 0–1, for the caption.
 function drawScreen(p) {
-  if (p === drawn) return
-  drawn = p
-  const ctx = screen.getContext('2d')
-  const g = ctx.createLinearGradient(0, 0, 0, screen.height)
-  g.addColorStop(0, '#6a8cff')
-  g.addColorStop(1, '#f0a0c0')
-  ctx.fillStyle = g
-  ctx.fillRect(0, 0, screen.width, screen.height)
-  ctx.fillStyle = '#fff'
-  ctx.font = '600 160px system-ui'
-  ctx.textAlign = 'center'
-  ctx.fillText('9:41', screen.width / 2, 360)
-  if (p > 0) {
-    // The card eases in over the first 6% (fade + 16px rise), so it arrives rather than pops.
-    const k = 1 - (1 - Math.min(p / 0.06, 1)) ** 3
-    const done = p >= 0.999
-    ctx.save()
-    ctx.globalAlpha = k
-    ctx.translate(0, 16 * (1 - k))
-    ctx.fillStyle = 'rgba(255,255,255,0.92)'
-    ctx.beginPath(); ctx.roundRect(40, 880, 510, 200, 48); ctx.fill()
-    ctx.textAlign = 'left'
-    ctx.fillStyle = '#111'
-    ctx.font = '600 40px system-ui'
-    ctx.fillText(done ? 'Updated to v2.4' : 'Updating to v2.4…', 84, 958)
-    ctx.fillStyle = '#6b6b70'
-    ctx.font = '400 32px system-ui'
-    if (done) {
-      ctx.fillText('Over the air, just now', 84, 1012)
-    } else {
-      // Track and fill share one pill shape; the fill never drops below a circle so it doesn't look broken.
-      ctx.fillStyle = 'rgba(0,0,0,0.08)'
-      ctx.beginPath(); ctx.roundRect(84, 996, 422, 14, 7); ctx.fill()
-      ctx.fillStyle = '#111'
-      ctx.beginPath(); ctx.roundRect(84, 996, Math.max(14, 422 * p), 14, 7); ctx.fill()
-    }
-    ctx.restore()
-  }
+  const key = JSON.stringify([screenState, p])
+  if (key === drawn) return
+  drawn = key
+  paint(screen.getContext('2d'), screenState)
   // The caption beside the phone says what didn't happen: each line rises in over its own stretch of the push.
   captionLines.forEach((el, i) => {
     const k = THREE.MathUtils.smoothstep(p, ...captionAt[i])
@@ -354,12 +346,8 @@ new GLTFLoader().load('/models/right.glb', ({ scene: hand }) => {
   let mesh
   hand.traverse((o) => { if (o.isMesh) { o.material = skin; mesh = o } })
 
-  // Each level splits every triangle into 4 (1.4k → 5k → 21k → 87k vertices). Cached per level.
-  const levels = [mesh.geometry]
-  smooth = (n) => {
-    while (levels.length <= n) levels.push(subdivide(levels.at(-1)))
-    mesh.geometry = levels[n]
-  }
+  // Each level splits every triangle into 4: 1.4k → 5k → 21k vertices. Dots are sampled from the result.
+  mesh.geometry = subdivide(subdivide(mesh.geometry))
   const bone = (name) => hand.getObjectByName(name)
   const pos = (name) => bone(name).position.clone()
 
@@ -421,7 +409,11 @@ new GLTFLoader().load('/models/right.glb', ({ scene: hand }) => {
       const fan = (fanRest[finger] + deg) * (1 - grip.squeeze * k)
       const side = fan - fanRest[finger]
       swing(bones, bones[0].position.clone(), normal, rad(side))
-      if (thumb) continue // thumb doesn't curl in the grip, like your photos
+      if (thumb) { // thumb doesn't curl in the grip, like your photos; while swiping, its MCP and tip joints bend in-plane
+        swing(bones.slice(1), bones[1].position.clone(), normal, rad(grip.thumbMcp || 0))
+        swing(bones.slice(2), bones[2].position.clone(), normal, rad(grip.thumbIp || 0))
+        continue
+      }
 
       // 2. Curl: each joint bends everything past it toward the palm, around the finger's own side axis.
       const hinge = across.clone().applyAxisAngle(normal, rad(side))
@@ -436,16 +428,21 @@ new GLTFLoader().load('/models/right.glb', ({ scene: hand }) => {
   // Scroll drives the grip: pin the canvas for two screens of scrolling, and map that distance to amount 0 → 1.
   // scrub: 1 = the hand takes ~1 s to catch up with the scrollbar, which is what smooths wheel steps.
   gsap.registerPlugin(ScrollTrigger)
-  // 0–1 grip, 1–1.25 hold on the lit screen, 1.25–2.25 morph into the server, 2.35–3.35 push the update.
+  // 0–1 grip, 1–2.2 scroll the feed, 2.2–2.5 the bug, 2.6–3.6 morph into the server, 3.7–4.7 push the fix,
+  // then a short hold so the ending sits.
+  const S = 1.2, T = 5
   gsap.to({ amount: 0 }, {
-    amount: 3.35,
+    amount: T,
     ease: 'none', // linear: easing already lives in the pose (squeezeFrom, smoothstep)
-    scrollTrigger: { trigger: '#app', pin: true, start: 'top top', end: '+=670%', scrub: 1 },
+    scrollTrigger: { trigger: '#app', pin: true, start: 'top top', end: `+=${T * 200}%`, scrub: 1 },
     onUpdate() {
       const a = this.targets()[0].amount
-      kit.setValue('grip.amount', Math.min(a, 1))
-      kit.setValue('ota.morph', THREE.MathUtils.clamp(a - 1.25, 0, 1))
-      kit.setValue('ota.push', THREE.MathUtils.clamp(a - 2.35, 0, 1))
+      const c = (x) => THREE.MathUtils.clamp(x, 0, 1)
+      kit.setValues({ // one call, so apply runs once per tick
+        grip: { amount: Math.min(a, 1) },
+        feed: { scroll: c((a - 1) / S), bug: c((a - 2.2) / 0.3) },
+        ota: { morph: c(a - 2.6), push: c(a - 3.7) },
+      })
     }, // re-poses via subscribe
   })
 
@@ -460,7 +457,7 @@ new GLTFLoader().load('/models/right.glb', ({ scene: hand }) => {
   const areas = []
   for (let t = 0, sum = 0; t < idx.length / 3; t++) areas.push(sum += new THREE.Triangle(corner(t, 0), corner(t, 1), corner(t, 2)).getArea())
 
-  const count = 500000 // the Count slider's max. Dots are random, so drawing the first N is still an even spread
+  const count = 250000
   const attr = (size) => new THREE.BufferAttribute(new Float32Array(count * size), size)
   const d = new THREE.BufferGeometry()
   for (const [name, size] of [['position', 3], ['normal', 3], ['skinWeight', 4], ['cloud', 3], ['seed', 1]]) d.setAttribute(name, attr(size))
@@ -506,7 +503,6 @@ new GLTFLoader().load('/models/right.glb', ({ scene: hand }) => {
     Object.assign(pts, { isSkinnedMesh: true, skeleton: mesh.skeleton, bindMatrix: mesh.bindMatrix, bindMatrixInverse: mesh.bindMatrixInverse })
     pts.frustumCulled = false
     pts.renderOrder = 1 // after the invisible hand has written its depth
-    pts.share = ids.length / count
     mesh.add(pts) // same world matrix as the mesh, which its skinning assumes
     return pts
   }
@@ -514,7 +510,7 @@ new GLTFLoader().load('/models/right.glb', ({ scene: hand }) => {
   const thumbDots = split(true)
   thumbDots.layers.enable(2)
   mesh.layers.enable(2)
-  dots = [split(false), thumbDots]
+  const dots = [split(false), thumbDots]
 
   // Server targets: each dot gets a random spot on the server's faces, plus that face's normal (for
   // shading) and whether the spot is a status light.
@@ -530,7 +526,6 @@ new GLTFLoader().load('/models/right.glb', ({ scene: hand }) => {
     pts.geometry.setAttribute('serverN', new THREE.BufferAttribute(SN, 3))
     pts.geometry.setAttribute('led', new THREE.BufferAttribute(L, 1))
   }
-  apply(kit.getValues()) // sets their draw ranges
   document.querySelector('#loading').classList.add('done') // the first frame with the dots is next
 })
 
@@ -568,8 +563,12 @@ renderer.setAnimationLoop((ms) => {
   renderer.render(scene, camera)
   camera.layers.set(2)
   thumbOnly.value = 1
+  // Paper-white thumb over the phone, so the screen doesn't show through its sparse lit side. Only while
+  // its dots sit on it: during the morph the mesh stays but the dots have left.
+  skin.colorWrite = u.progress.value >= 1 && u.morph.value <= 0
   renderer.render(scene, camera)
   thumbOnly.value = 0
+  skin.colorWrite = false
   camera.layers.set(0)
 })
 
