@@ -1,74 +1,86 @@
-# Handoff — the_hand (2026-09-25, updated after phase 3)
+# Handoff — the_hand (2026-09-27, phone-screen session)
+
+**Next session: pick between Frozen and Crash (Shatter is out), then promote the feed story from `proto/feed/` into `src/main.js` and ship `ota-broadcast`.** Everything below was checked this session unless marked *unverified*.
 
 ## Where it stands
 - Live: https://thehand-iota.vercel.app (Vercel team **shrey258s-projects**, never `not-a-number-labs`). `thehand.vercel.app` is someone else's.
-- **Branches:** Vercel's production branch is now `production` (still @ `2f93826`, the pre-phone version). `main` @ `70293eb` has the phone work and only builds previews.
-- **Go live:** `git switch production && git merge main && git push`. Don't use `vercel deploy --prod` any more; it ships the local folder to the live site from whatever branch you're on.
-- **Dev:** `npm run dev` shows the DialKit panel + Reset. Production hides it and doesn't persist values.
-  - Code defaults = your last Copy paste. Hit **Reset** if the browser shows old saved values.
-- The `productionEnabled: false` from the last commit had hidden the panel in dev too. It's now `import.meta.env.DEV`.
+- `main` = `production` = `8a7e39c` (the hand + phone, no OTA). Vercel only deploys `production`; `main` builds previews.
+- **Branch `ota-broadcast`**: OTA stages committed (`e0ec18a`, `1007d2c`). **Uncommitted:** the page caption (`index.html`, `src/style.css`, `src/main.js` `drawScreen`), this file, and the whole `proto/feed/` directory.
+- **Go live:** `git switch production && git merge main && git push`. Never `vercel deploy --prod`.
+- **Dev:** `npm run dev` shows the DialKit panel. Production hides it. Hit **Reset** if the browser shows old saved values (new dials were added this session).
 
-## What was built (phase 1 + 2, ~1h50 total)
-- Rigged WebXR "generic-hand" right.glb, stood upright palm-to-camera by measuring up/across/palm-normal and rotating the model.
-- Grey grainy skin: `MeshStandardMaterial` + random-noise bump map.
-- Round fingertips: `src/subdivide.js` splits every triangle into 4 and lifts new vertices onto the curve using normals (PN-triangle midpoint). Check: `node src/subdivide.test.js`.
-- Drag to phone grip: `pose()` = spread → per-joint curl → wrist roll; drag samples the middle fingertip's screen arc and follows the mouse. `squeeze` closes the finger fan relative to the middle finger (`fanRest`).
+## The feed story (prototype: `proto/feed/`, open `/proto/feed/` on the dev server)
+Goal: the hand is the user. They scroll a feed with their thumb, a bug hits, the hand becomes the OTA server and beams a fix, then turns back into the hand, and the user scrolls again.
 
-## Phase 3: phone in the hand (~1h40, guessed 30 min)
-- **Model:** `public/models/iphone.glb`, iPhone 16 by Wes (sketchfab.com/wimell).
-  - License is Sketchfab Standard: **credit him when posting**.
-  - Modelled in cm, so scaled by 0.01.
-- **Screen:** node `Object_18` (three names meshes by node; the glTF mesh is `Object_3`).
-  - A `<canvas>` is its `emissiveMap`. Draw on the canvas to change what shows.
-  - Its UVs only span u 0.018–0.48 and run top-down, so the texture uses `repeat`/`offset` plus `flipY = false`.
-- **Placement:** the phone lives in world space, tuned for grip = 1 with the Phone x/y/z sliders.
-  - `drop` lifts it by `drop × (1 − amount)`, so the same drag brings it down from above.
-- **Grip:** intermediate and distal are now per finger (`grip.intermediate[finger]`, `grip.distal[finger]`). Proximal is still shared.
-- **Occlusion is a render trick, not collision.** Three passes each frame:
-  1. Hand.
-  2. Clear depth, then draw the phone (layer 1) on top.
-  3. The hand again with `thumbOnly = 1`: the shader discards pixels not mostly skinned to thumb bones (skin indices 1–4), depth-tested against the phone.
-  - Only correct from this fixed camera (`ponytail:` comment).
-  - The white background is `setClearColor`, not `scene.background`, because a background would repaint over pass 1.
-- **Shadow:** the key light casts, the phone casts, the hand receives. The shadow camera also sees layer 1.
-  - `PCFSoftShadowMap` is removed in this three version, so it uses `PCFShadowMap` + `radius`.
+- `proto/feed/main.js` is a copy of `src/main.js` plus the feed. `proto/feed/screen.js` draws the phone screen. Nothing in `src/` imports them; `vite build` ignores them.
+- **Timeline** (`proto/feed/main.js:457`, pinned `T * 200%` = 1400%): grip 0–1 · scroll 1–2.2 · bug 2.2–2.5 · morph 2.6–3.6 · push 3.7–4.7 · server → hand 4.8–5.8 (`ota.back`, plays the morph in reverse) · scroll again 5.8–7.
+- **Thumb swipe** (`:261`): the thumb moves onto the screen, then does 3 flicks per scroll stage. The design came from the research below. Dials are in DialKit → Feed:
+  - `from`/`to`: the angle range, set by him. Bigger = lower on the screen.
+  - `peak`, `curl`, `lag`, `bend`, `distance`, `drag`.
+  - Each flick is a cosine bump with zero speed at both ends. The thumb lets go halfway up, at its fastest.
+  - The feed follows the thumb while touching, then coasts with an exponential decay. τ is solved by bisection so the speed at release matches. Verified numerically: 3.142 before vs 3.141 after release, and each flick ends exactly `distance` posts on.
+  - The joints share the swing: CMC 75%, MCP 25% a little later, and the IP joint flexes more when the thumb is low.
+  - All bends are around the view axis (the only one verified to look right from this camera).
+- **Paper-white thumb** (`:595`): in the thumb pass the depth hand also writes white, so the screen doesn't show through the sparse lit dots. That was the cause of his "flicker". It's on only while the dots sit on the hand (`progress ≥ 1 && morph ≤ 0`). *Unverified:* whether the fill switching off at morph start / on at the end of the return is noticeable.
+- **Screen** (`screen.js`): a white "Feed" app, 16 posts, long names truncated with "…". A shared "Updated to v2.4" pill shows at the end of the push and fades as the hand returns. The caption fades out as the hand returns.
+- **Picker**: the verbatim emil-prototype pill; keys `1`–`3`/`←→`, `?v=N`. `window.kit = kit` is exposed for poking values (proto only).
 
-## Phase 4: scroll + dots (branch `dither-dots`)
-- **Scroll drives the grip** (`d7d2c81` on main): GSAP ScrollTrigger pins `#app` for 200% of the window height and scrubs `grip.amount` 0 → 1 via `kit.setValue`. The mouse drag is gone; the default amount is 0.
-- **The hand is dots**, like vellabs' `docs/MOTION.md:195`: each dot has a cloud spot and a home on the skin, blended per dot by scroll with its own start time (`seed`, `travel`).
-  - Homes are area-weighted random points on the skin. Each borrows the nearest corner's bone weights, so it rides the grip (`ponytail:` comment: knuckles may tear).
-  - `Points` borrows the hand's skeleton via `isSkinnedMesh` (three internals, recheck after upgrades).
-  - The real hand only writes depth (`colorWrite: false`), so back-side dots stay hidden. Dots still in flight are forced to the near plane so the invisible hand doesn't cut a hole in the cloud.
-  - Dither: lit skin drops dots (`shade`); cloud dots are pale (`cloudInk`) and darken as they land. The Count slider sets the draw range of 500k pre-sampled dots.
-- **Phone centred** with `camera.setViewOffset` (a shift lens). Moving the camera instead changed the viewing angle and broke the grip look.
-- Lost: the phone's shadow on the hand. The Skin colour/roughness/grain/wireframe sliders now do nothing.
+## Decisions
+- **Bug look: keep Frozen and Crash, drop Shatter** (his words: "keep both frozen and crash for now"). Not yet decided between the two.
+  - **Frozen** (`screen.js:128`): scrim, a 12-spoke spinner that turns with the scroll, "Feed isn't responding"; it clears as the push ends.
+  - **Crash** (`:151`): the app shrinks to the home screen and an alert says "Feed quit unexpectedly". It becomes "Installing a fix…" with a progress bar, then the app reopens. It repeats the "Updated" pill; drop one of the two if Crash wins.
+  - Rejected: **Shatter** (`:86`): tear, then dots scatter on black, and the waves pull them home.
+- **Page scroll drives the feed, and the thumb must visibly swipe**: a thumb sitting still while the feed moves "doesn't make sense".
+- **The hand comes back after the broadcast**, and the user scrolls again. Keep a brief "Updated" pill; the old "Updating to v2.4…" card is gone.
+- **The caption has to move** (his words). Done so far: it fades out on the return. *Unverified* whether that's what he meant by "move".
+- Earlier (still standing): server shape "Through the cloud", link "Broadcast", "no store" message = page caption, waves follow the scroll, `rnd()` sin hash. See git history `d533239`, `e0ec18a` for the rejected options.
 
-## Posting (not done yet)
-- Thread under the video post: reply 1 = what it is + link, reply 2 = fingertip story, reply 3 = DialKit shoutout. **Verify Josh Puckett's X handle before tagging.**
+## To promote the winner (emil-prototype Phase 7)
+1. Write the decision (the winner + the rejected variants) into this file.
+2. Port the feed code into `src/`: the `feed` dials, the thumb block, the `pose` MCP/IP swings, the timeline, the white thumb pass, `screen.js` minus the losing variants, and the extra caption fade. Drop `window.kit` and the picker.
+3. Delete `proto/feed/`, then grep for `proto` and `picker` to confirm nothing is left.
+4. Then the existing ship list: reduced motion is *unverified* (the lights freeze; the waves and thumb still scrub), and so are portrait phones (under 700px the caption moves above the phone). Merge to `main`, then `production`.
 
-## Learning — pick up here tomorrow
-Goal: be able to rebuild this without AI. Docs allowed; AI only for hints (where to look → the idea → one line max, never full code). State a time guess before each step.
+## Running things (die with this machine; restart as needed)
+- A dev server on port 5199 (`npx vite --port 5199`) and a cloudflared quick tunnel (`cloudflared tunnel --url http://localhost:5199 --http-host-header localhost:5199`). The URL changes on every restart. He shared one to ask for opinions.
+- A debug Chrome on CDP port 9222 (profile in `/private/tmp/claude-501/chrome-proto`). Screenshot helpers are in `/private/tmp/claude-501/`: `shot.mjs <v> <amount…>`, `poke.mjs`, `flick.sh`, `strip.sh`. Temp dir: *unverified* whether they survive.
 
-Walkthrough progress (`src/main.js`):
-- [x] Part 1 (8–22): devicePixelRatio, domElement, camera fov/near/far (units = metres). **Lights not yet understood — revisit** (key = sun, one direction, gives shape; fill = sky above/ground below, stops the dark side going black; try Fill = 0).
-- [x] Part 2 (24–42): noise texture + bump map (fakes dents via light, outline unchanged).
-- [x] Part 3 (74–97): `apply()` = "make the scene match these values"; called by DialKit subscribe, after load, and via drag → setValue.
-- [ ] Part 4 (111–126): standing the hand up (basis from up/across/normal).
-- [ ] Part 5 (134–180): `swing()` + `pose()`. Unanswered questions:
-  1. Why `sub(pivot)` → rotate → `add(pivot)`? What breaks without it?
-  2. Why does each bone need both a position and a quaternion change?
-- [ ] Part 6 (181–210): drag along the arc.
-- [ ] `subdivide.js`.
-- [ ] Phase 3: why the thumb pass works (depth buffer after pass 2 holds only the phone). Try deleting `renderer.clearDepth()` and predict what breaks first.
+## Posting (in progress, unchanged)
+- Video recorded (14s loop, 1:1, 1080p, Cursorful). *Unverified* whether it's posted.
+- Credit: "iPhone 16 by Wes, sketchfab.com/wimell". No X handle; don't guess one.
+- Thread plan: reply 1 = what + link, 2 = fingertip story, 3 = DialKit shoutout (**verify Josh Puckett's X handle first**).
+- Not done: `og:`/`twitter:` meta and a preview image.
 
-**Unread since the GSAP change (phase 4). Read these before building anything new.** Line numbers are as of `820ec0d`.
-- [ ] Scroll (320–330): `gsap.to` on a plain object + `onUpdate` → `kit.setValue`. Predict: with `end: '+=200%'` on a 700px window, how many px from 0 to 1? What breaks without `pin: true`?
-- [ ] Invisible hand (58): `colorWrite: false` + `polygonOffset`. Why does the hand still need to exist?
-- [ ] Dot shader (72–117): `mix(drift, home, k)`, the per-dot `start`/`smoothstep`, the `-0.999 * w` near-plane trick, the dither `discard`. Predict what 50% scroll looks like without the near-plane line.
-- [ ] Dot uniforms in `apply()` (190–197): why the size is rounded to whole device pixels.
-- [ ] Sampling (333–367): cumulative triangle areas + binary search = even spread. Why fold `u + v > 1`?
-- [ ] Skinned points (369–376): borrowing the skeleton via `isSkinnedMesh`, and why `mesh.add(dots)`.
-- [ ] Phone centring (166–174): `setViewOffset` vs moving the camera. Why did moving the camera change the grip?
-- [ ] Render loop (389–): reduced-motion check.
-- [ ] Perf pass (uncommitted, 64 → 120 FPS): pixel-ratio cap, shadows deleted, `MeshBasicMaterial` depth hand, thumb dots split onto layer 2 (`split()`), `dirty` flag in the render loop. Why does the thumb pass now use `camera.layers.set(2)`?
-- [ ] Easing (uncommitted): `easeOut` in `apply()` for the grip and the phone (`phone.land`), the screen lighting up (`phone.screenOn`), and the two-stage `gather`/`land` in the dot shader. Why did the grip end up ease-in-out while the phone is ease-out?
+## Learning tracker
+Goal: be able to rebuild this without AI. Docs are allowed; AI only for hints (where to look → the idea → one line max, never full code). State a time guess before each step. At session start, remind him what's unchecked. **Time guess this session: 30 min; actual: much longer** (the thumb alone took several rounds).
+
+Walkthrough (`src/main.js`):
+- [x] Renderer, camera, `apply()`. **Lights: revisit** (key = one direction for shape; fill stops the dark side going black).
+- [ ] Standing the hand up (basis from up/across/normal).
+- [ ] `swing()` + `pose()`: why `sub(pivot)` → rotate → `add(pivot)`; why each bone needs a position and a quaternion change.
+- [ ] `subdivide.js` (check: `node src/subdivide.test.js`).
+- [ ] The thumb pass (after pass 2 the depth buffer holds only the phone).
+- [ ] Scroll: `gsap.to` + `onUpdate` → `kit.setValue`; px per unit; what breaks without `pin`.
+- [ ] Invisible hand: `colorWrite: false` + `polygonOffset`. (This session turned `colorWrite` on for the thumb pass; see why above.)
+- [ ] Dot shader: `mix(drift, home, k)`, `gather`/`land`, the near-plane trick, the dither `discard`.
+- [ ] Dot size rounded to whole device pixels.
+- [ ] Sampling: cumulative triangle areas + binary search; why fold `u + v > 1`.
+- [ ] Thumb split + skinned points: `isSkinnedMesh`, layer 2, `mesh.add(pts)`.
+- [ ] Phone centring: `setViewOffset` vs moving the camera.
+- [ ] Easing: grip ease-in-out vs phone ease-out.
+- [ ] Render loop: `dirty` and reduced motion.
+- [ ] Wave maths: `push * trips - ring / count` + `fract`.
+- [ ] Why the server's dots skip the depth test; the server spots and the "spare" couriers.
+- [ ] **New:** the flick maths in `proto/feed/main.js:261`: why a cosine bump has zero speed at both ends, why releasing mid-rise makes a flick, and how bisection finds τ.
+
+## Known loose ends
+- The knuckles may tear when bent hard (`ponytail:` comment); the skinned points rely on three internals (`isSkinnedMesh`).
+- Portrait phones: the hand and server may be cut off. *Unverified.*
+- The fingers pass through the phone in 3D; the occlusion only works from this fixed camera.
+- Research used for the thumb: https://arxiv.org/pdf/2102.07459 (minimum jerk), https://pmc.ncbi.nlm.nih.gov/articles/PMC12649530/ and https://www.sciencedirect.com/science/article/am/pii/S0003687016301156 (thumb joint angles while swiping).
+
+## Suggested skills
+- `own-the-decision`: first. Frozen vs Crash is his call; get a time guess.
+- `emil-prototype`: `keep <variant>` to write the decision, promote it and delete the harness.
+- `emil-animations`: when porting, keep the minimum-jerk, zero-speed-at-both-ends rule for any new motion.
+- `ponytail:ponytail`: keep the port small; don't carry the picker or the losing variants into `src/`.

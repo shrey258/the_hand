@@ -13,3 +13,26 @@ canvas { display: block; }
   transition: opacity 200ms ease-out;
 }
 #loading.done { opacity: 0; }
+
+/* Beside the phone during the OTA push; main.js fades each line in with the scroll. */
+#caption {
+  position: fixed;
+  left: 6vw;
+  top: 50%;
+  transform: translateY(-50%);
+  max-width: 28vw;
+  margin: 0;
+  display: grid;
+  gap: 6px;
+  pointer-events: none;
+  font: 600 28px/1.2 system-ui, sans-serif;
+  letter-spacing: -0.01em;
+  color: #111;
+  -webkit-font-smoothing: antialiased;
+}
+#caption span { opacity: 0; }
+#caption span:nth-child(2), #caption span:nth-child(3) { color: #8a8a8a; }
+/* Portrait phones: no room beside the phone, so the caption sits above it. */
+@media (max-width: 700px) {
+  #caption { top: 10vh; left: 16px; right: 16px; max-width: none; transform: none; font-size: 20px; }
+}
